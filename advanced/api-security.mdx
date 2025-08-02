@@ -1,0 +1,862 @@
+---
+title: 'API Security Best Practices'
+description: 'Comprehensive guide to securing your APIs against common threats and vulnerabilities'
+icon: 'shield-halved'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/api-security-light.png"
+  alt="API Security"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/api-security-dark.png"
+  alt="API Security"
+/>
+
+## Overview
+
+API security is critical in today's interconnected world. This guide covers essential security practices to protect your APIs from common threats and vulnerabilities.
+
+<Warning>
+Unsecured APIs are one of the top security risks according to OWASP. Always implement multiple layers of security.
+</Warning>
+
+## Common API Threats
+
+<CardGroup cols={2}>
+  <Card
+    title="Injection Attacks"
+    icon="syringe"
+    color="#ef4444"
+  >
+    SQL injection, NoSQL injection, and command injection vulnerabilities
+  </Card>
+  <Card
+    title="Broken Authentication"
+    icon="key-skeleton"
+    color="#f97316"
+  >
+    Weak authentication mechanisms and session management flaws
+  </Card>
+  <Card
+    title="Data Exposure"
+    icon="eye"
+    color="#eab308"
+  >
+    Excessive data exposure and sensitive data in responses
+  </Card>
+  <Card
+    title="Rate Limiting Issues"
+    icon="gauge"
+    color="#06b6d4"
+  >
+    Lack of resources and rate limiting leading to DoS attacks
+  </Card>
+</CardGroup>
+
+## Authentication & Authorization
+
+### API Key Management
+
+<Tabs>
+  <Tab title="API Key Generation">
+    ```javascript
+    const crypto = require('crypto');
+    
+    function generateAPIKey() {
+      return crypto.randomBytes(32).toString('hex');
+    }
+    
+    function hashAPIKey(apiKey) {
+      return crypto
+        .createHash('sha256')
+        .update(apiKey)
+        .digest('hex');
+    }
+    
+    // Store hashed version in database
+    const apiKey = generateAPIKey();
+    const hashedKey = hashAPIKey(apiKey);
+    
+    await db.apiKeys.create({
+      userId: user.id,
+      keyHash: hashedKey,
+      name: 'Production API Key',
+      permissions: ['read', 'write'],
+      expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000) // 1 year
+    });
+    ```
+  </Tab>
+  
+  <Tab title="API Key Validation">
+    ```javascript
+    async function validateAPIKey(req, res, next) {
+      const apiKey = req.headers['x-api-key'];
+      
+      if (!apiKey) {
+        return res.status(401).json({ error: 'API key required' });
+      }
+      
+      const hashedKey = hashAPIKey(apiKey);
+      const keyRecord = await db.apiKeys.findOne({
+        where: { keyHash: hashedKey, active: true }
+      });
+      
+      if (!keyRecord || keyRecord.expiresAt < new Date()) {
+        return res.status(401).json({ error: 'Invalid or expired API key' });
+      }
+      
+      // Rate limiting per API key
+      const rateLimitKey = `rate_limit:${keyRecord.id}`;
+      const requests = await redis.incr(rateLimitKey);
+      
+      if (requests === 1) {
+        await redis.expire(rateLimitKey, 3600); // 1 hour window
+      }
+      
+      if (requests > keyRecord.rateLimit) {
+        return res.status(429).json({ error: 'Rate limit exceeded' });
+      }
+      
+      req.apiKey = keyRecord;
+      next();
+    }
+    ```
+  </Tab>
+  
+  <Tab title="OAuth 2.0 Implementation">
+    ```javascript
+    const jwt = require('jsonwebtoken');
+    
+    // OAuth token validation middleware
+    async function validateOAuthToken(req, res, next) {
+      const authHeader = req.headers.authorization;
+      
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Bearer token required' });
+      }
+      
+      const token = authHeader.substring(7);
+      
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        
+        // Check token in database (for revocation)
+        const tokenRecord = await db.tokens.findOne({
+          where: { jti: decoded.jti, revoked: false }
+        });
+        
+        if (!tokenRecord) {
+          return res.status(401).json({ error: 'Token revoked or invalid' });
+        }
+        
+        req.user = decoded;
+        req.scopes = decoded.scope ? decoded.scope.split(' ') : [];
+        next();
+      } catch (error) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+    }
+    
+    // Scope validation
+    function requireScope(requiredScope) {
+      return (req, res, next) => {
+        if (!req.scopes.includes(requiredScope)) {
+          return res.status(403).json({ 
+            error: `Insufficient scope. Required: ${requiredScope}` 
+          });
+        }
+        next();
+      };
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Input Validation & Sanitization
+
+<Steps>
+  <Step title="Schema Validation">
+    ```javascript
+    const Joi = require('joi');
+    
+    const userSchema = Joi.object({
+      email: Joi.string().email().required(),
+      password: Joi.string().min(8).pattern(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/).required(),
+      age: Joi.number().integer().min(13).max(120),
+      role: Joi.string().valid('user', 'admin', 'moderator').default('user')
+    });
+    
+    function validateInput(schema) {
+      return (req, res, next) => {
+        const { error, value } = schema.validate(req.body);
+        
+        if (error) {
+          return res.status(400).json({
+            error: 'Validation failed',
+            details: error.details.map(d => d.message)
+          });
+        }
+        
+        req.validatedData = value;
+        next();
+      };
+    }
+    
+    app.post('/api/users', validateInput(userSchema), createUser);
+    ```
+  </Step>
+  
+  <Step title="SQL Injection Prevention">
+    ```javascript
+    // ❌ Vulnerable to SQL injection
+    const query = `SELECT * FROM users WHERE email = '${email}'`;
+    
+    // ✅ Use parameterized queries
+    const query = 'SELECT * FROM users WHERE email = ?';
+    const result = await db.query(query, [email]);
+    
+    // ✅ With ORM (Sequelize example)
+    const user = await User.findOne({
+      where: { email: req.body.email }
+    });
+    
+    // ✅ Input sanitization
+    const validator = require('validator');
+    
+    function sanitizeInput(input) {
+      if (typeof input !== 'string') return input;
+      
+      return validator.escape(input.trim());
+    }
+    ```
+  </Step>
+  
+  <Step title="NoSQL Injection Prevention">
+    ```javascript
+    // ❌ Vulnerable to NoSQL injection
+    const user = await User.findOne({ email: req.body.email });
+    
+    // ✅ Type checking and validation
+    function validateMongoInput(input) {
+      if (typeof input === 'object' && input !== null) {
+        throw new Error('Object inputs not allowed');
+      }
+      return input;
+    }
+    
+    const email = validateMongoInput(req.body.email);
+    const user = await User.findOne({ email });
+    
+    // ✅ Using mongoose schema validation
+    const userSchema = new mongoose.Schema({
+      email: {
+        type: String,
+        required: true,
+        validate: {
+          validator: validator.isEmail,
+          message: 'Invalid email format'
+        }
+      }
+    });
+    ```
+  </Step>
+</Steps>
+
+## Rate Limiting & DDoS Protection
+
+<AccordionGroup>
+  <Accordion title="Basic Rate Limiting" icon="stopwatch">
+    ```javascript
+    const rateLimit = require('express-rate-limit');
+    const RedisStore = require('rate-limit-redis');
+    const Redis = require('redis');
+    
+    const redisClient = Redis.createClient();
+    
+    // Global rate limiting
+    const globalLimiter = rateLimit({
+      store: new RedisStore({
+        sendCommand: (...args) => redisClient.sendCommand(args),
+      }),
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 1000, // Limit each IP to 1000 requests per windowMs
+      message: {
+        error: 'Too many requests from this IP',
+        retryAfter: Math.round(15 * 60 * 1000 / 1000)
+      },
+      standardHeaders: true,
+      legacyHeaders: false,
+    });
+    
+    // Stricter limits for sensitive endpoints
+    const authLimiter = rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: 5, // Only 5 login attempts per 15 minutes
+      skipSuccessfulRequests: true,
+    });
+    
+    app.use('/api/', globalLimiter);
+    app.use('/api/auth/login', authLimiter);
+    ```
+  </Accordion>
+  
+  <Accordion title="Advanced Rate Limiting" icon="gauge-high">
+    ```javascript
+    // Custom rate limiting with different tiers
+    class AdvancedRateLimiter {
+      constructor(redis) {
+        this.redis = redis;
+      }
+      
+      async checkLimit(identifier, tier = 'basic') {
+        const limits = {
+          basic: { requests: 100, window: 3600 },
+          premium: { requests: 1000, window: 3600 },
+          enterprise: { requests: 10000, window: 3600 }
+        };
+        
+        const limit = limits[tier];
+        const key = `rate_limit:${tier}:${identifier}`;
+        
+        const current = await this.redis.incr(key);
+        
+        if (current === 1) {
+          await this.redis.expire(key, limit.window);
+        }
+        
+        const ttl = await this.redis.ttl(key);
+        
+        return {
+          allowed: current <= limit.requests,
+          remaining: Math.max(0, limit.requests - current),
+          resetTime: Date.now() + (ttl * 1000),
+          limit: limit.requests
+        };
+      }
+    }
+    
+    const rateLimiter = new AdvancedRateLimiter(redisClient);
+    
+    async function advancedRateLimit(req, res, next) {
+      const identifier = req.apiKey?.id || req.ip;
+      const tier = req.apiKey?.tier || 'basic';
+      
+      const result = await rateLimiter.checkLimit(identifier, tier);
+      
+      res.set({
+        'X-RateLimit-Limit': result.limit,
+        'X-RateLimit-Remaining': result.remaining,
+        'X-RateLimit-Reset': result.resetTime
+      });
+      
+      if (!result.allowed) {
+        return res.status(429).json({
+          error: 'Rate limit exceeded',
+          retryAfter: Math.ceil((result.resetTime - Date.now()) / 1000)
+        });
+      }
+      
+      next();
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="DDoS Protection" icon="shield">
+    ```javascript
+    const helmet = require('helmet');
+    const slowDown = require('express-slow-down');
+    
+    // Security headers
+    app.use(helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", "data:", "https:"],
+        },
+      },
+      hsts: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true
+      }
+    }));
+    
+    // Progressive delay for repeated requests
+    const speedLimiter = slowDown({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      delayAfter: 100, // Allow 100 requests per 15 minutes at full speed
+      delayMs: 500, // Add 500ms delay per request after delayAfter
+      maxDelayMs: 20000, // Maximum delay of 20 seconds
+    });
+    
+    app.use('/api/', speedLimiter);
+    
+    // Request size limiting
+    app.use(express.json({ limit: '10mb' }));
+    app.use(express.urlencoded({ limit: '10mb', extended: true }));
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Data Protection
+
+### Encryption & Hashing
+
+<CodeGroup>
+
+```javascript Encryption
+const crypto = require('crypto');
+
+class DataEncryption {
+  constructor(secretKey) {
+    this.algorithm = 'aes-256-gcm';
+    this.secretKey = crypto.scryptSync(secretKey, 'salt', 32);
+  }
+  
+  encrypt(text) {
+    const iv = crypto.randomBytes(16);
+    const cipher = crypto.createCipher(this.algorithm, this.secretKey, iv);
+    
+    let encrypted = cipher.update(text, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+      encrypted,
+      iv: iv.toString('hex'),
+      authTag: authTag.toString('hex')
+    };
+  }
+  
+  decrypt(encryptedData) {
+    const decipher = crypto.createDecipher(
+      this.algorithm, 
+      this.secretKey, 
+      Buffer.from(encryptedData.iv, 'hex')
+    );
+    
+    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
+    
+    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  }
+}
+```
+
+```javascript Hashing
+const bcrypt = require('bcrypt');
+const crypto = require('crypto');
+
+// Password hashing
+async function hashPassword(password) {
+  const saltRounds = 12;
+  return await bcrypt.hash(password, saltRounds);
+}
+
+async function verifyPassword(password, hash) {
+  return await bcrypt.compare(password, hash);
+}
+
+// Data integrity hashing
+function createDataHash(data) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(data))
+    .digest('hex');
+}
+
+function verifyDataIntegrity(data, expectedHash) {
+  const actualHash = createDataHash(data);
+  return actualHash === expectedHash;
+}
+```
+
+</CodeGroup>
+
+### Sensitive Data Handling
+
+<Tabs>
+  <Tab title="Data Masking">
+    ```javascript
+    function maskSensitiveData(data) {
+      const sensitiveFields = ['password', 'ssn', 'creditCard', 'apiKey'];
+      
+      function maskValue(value, field) {
+        if (sensitiveFields.includes(field)) {
+          if (field === 'creditCard') {
+            return value.replace(/\d(?=\d{4})/g, '*');
+          }
+          if (field === 'ssn') {
+            return value.replace(/\d(?=\d{4})/g, '*');
+          }
+          return '[REDACTED]';
+        }
+        return value;
+      }
+      
+      function maskObject(obj) {
+        const masked = {};
+        for (const [key, value] of Object.entries(obj)) {
+          if (typeof value === 'object' && value !== null) {
+            masked[key] = maskObject(value);
+          } else {
+            masked[key] = maskValue(value, key);
+          }
+        }
+        return masked;
+      }
+      
+      return maskObject(data);
+    }
+    
+    // Usage in API responses
+    app.get('/api/users/:id', async (req, res) => {
+      const user = await User.findById(req.params.id);
+      const maskedUser = maskSensitiveData(user.toJSON());
+      res.json(maskedUser);
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Field-Level Encryption">
+    ```javascript
+    const mongoose = require('mongoose');
+    const encrypt = require('mongoose-field-encryption').fieldEncryption;
+    
+    const userSchema = new mongoose.Schema({
+      email: String,
+      name: String,
+      ssn: { type: String, encrypt: true },
+      creditCard: { type: String, encrypt: true },
+      address: {
+        street: { type: String, encrypt: true },
+        city: String,
+        state: String,
+        zip: { type: String, encrypt: true }
+      }
+    });
+    
+    userSchema.plugin(encrypt, {
+      fields: ['ssn', 'creditCard', 'address.street', 'address.zip'],
+      secret: process.env.ENCRYPTION_SECRET
+    });
+    
+    const User = mongoose.model('User', userSchema);
+    ```
+  </Tab>
+  
+  <Tab title="PII Detection">
+    ```javascript
+    const patterns = {
+      email: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,
+      phone: /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/g,
+      ssn: /\b\d{3}-?\d{2}-?\d{4}\b/g,
+      creditCard: /\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/g
+    };
+    
+    function detectPII(text) {
+      const detected = [];
+      
+      for (const [type, pattern] of Object.entries(patterns)) {
+        const matches = text.match(pattern);
+        if (matches) {
+          detected.push({ type, matches });
+        }
+      }
+      
+      return detected;
+    }
+    
+    function sanitizePII(text) {
+      let sanitized = text;
+      
+      for (const [type, pattern] of Object.entries(patterns)) {
+        sanitized = sanitized.replace(pattern, `[${type.toUpperCase()}]`);
+      }
+      
+      return sanitized;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Security Headers & CORS
+
+<CodeGroup>
+
+```javascript Security Headers
+const helmet = require('helmet');
+
+app.use(helmet({
+  // Content Security Policy
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://api.example.com"],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  
+  // HTTP Strict Transport Security
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  },
+  
+  // X-Frame-Options
+  frameguard: { action: 'deny' },
+  
+  // X-Content-Type-Options
+  noSniff: true,
+  
+  // Referrer Policy
+  referrerPolicy: { policy: 'same-origin' }
+}));
+
+// Custom security headers
+app.use((req, res, next) => {
+  res.setHeader('X-API-Version', '1.0');
+  res.setHeader('X-Response-Time', Date.now() - req.startTime);
+  next();
+});
+```
+
+```javascript CORS Configuration
+const cors = require('cors');
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'https://yourdomain.com',
+      'https://app.yourdomain.com',
+      'https://admin.yourdomain.com'
+    ];
+    
+    // Allow requests with no origin (mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-API-Key',
+    'X-Requested-With'
+  ],
+  credentials: true,
+  maxAge: 86400 // 24 hours
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
+```
+
+</CodeGroup>
+
+## Security Testing
+
+<AccordionGroup>
+  <Accordion title="Automated Security Testing" icon="robot">
+    ```javascript
+    // Security test suite with Jest
+    const request = require('supertest');
+    const app = require('../app');
+    
+    describe('API Security Tests', () => {
+      test('should reject requests without API key', async () => {
+        const response = await request(app)
+          .get('/api/users')
+          .expect(401);
+        
+        expect(response.body.error).toBe('API key required');
+      });
+      
+      test('should prevent SQL injection', async () => {
+        const maliciousInput = "'; DROP TABLE users; --";
+        
+        const response = await request(app)
+          .post('/api/users')
+          .set('X-API-Key', 'valid-api-key')
+          .send({ email: maliciousInput })
+          .expect(400);
+        
+        expect(response.body.error).toBe('Validation failed');
+      });
+      
+      test('should enforce rate limiting', async () => {
+        const requests = Array(101).fill().map(() =>
+          request(app)
+            .get('/api/users')
+            .set('X-API-Key', 'valid-api-key')
+        );
+        
+        const responses = await Promise.all(requests);
+        const rateLimitedResponses = responses.filter(r => r.status === 429);
+        
+        expect(rateLimitedResponses.length).toBeGreaterThan(0);
+      });
+    });
+    ```
+  </Accordion>
+  
+  <Accordion title="Penetration Testing" icon="bug">
+    ```bash
+    # OWASP ZAP automated security testing
+    docker run -t owasp/zap2docker-stable zap-baseline.py \
+      -t http://localhost:3000/api \
+      -J zap-report.json
+    
+    # Nikto web server scanner
+    nikto -h http://localhost:3000 -Format json -output nikto-report.json
+    
+    # SQLMap for SQL injection testing
+    sqlmap -u "http://localhost:3000/api/users?id=1" \
+      --headers="X-API-Key: test-key" \
+      --batch --risk=3 --level=5
+    ```
+  </Accordion>
+  
+  <Accordion title="Security Monitoring" icon="eye">
+    ```javascript
+    const winston = require('winston');
+    
+    // Security event logging
+    const securityLogger = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+      ),
+      transports: [
+        new winston.transports.File({ filename: 'security.log' }),
+        new winston.transports.Console()
+      ]
+    });
+    
+    // Security middleware for monitoring
+    function securityMonitoring(req, res, next) {
+      const startTime = Date.now();
+      
+      // Log suspicious patterns
+      const suspiciousPatterns = [
+        /union.*select/i,
+        /script.*alert/i,
+        /<script/i,
+        /\.\.\/\.\.\//,
+        /etc\/passwd/
+      ];
+      
+      const requestData = JSON.stringify({
+        body: req.body,
+        query: req.query,
+        params: req.params
+      });
+      
+      for (const pattern of suspiciousPatterns) {
+        if (pattern.test(requestData)) {
+          securityLogger.warn('Suspicious request detected', {
+            ip: req.ip,
+            userAgent: req.get('User-Agent'),
+            url: req.url,
+            method: req.method,
+            pattern: pattern.toString(),
+            data: requestData
+          });
+          break;
+        }
+      }
+      
+      res.on('finish', () => {
+        const duration = Date.now() - startTime;
+        
+        // Log failed authentication attempts
+        if (req.url.includes('/auth/') && res.statusCode === 401) {
+          securityLogger.warn('Failed authentication attempt', {
+            ip: req.ip,
+            userAgent: req.get('User-Agent'),
+            url: req.url,
+            duration
+          });
+        }
+        
+        // Log rate limit violations
+        if (res.statusCode === 429) {
+          securityLogger.warn('Rate limit exceeded', {
+            ip: req.ip,
+            url: req.url,
+            duration
+          });
+        }
+      });
+      
+      next();
+    }
+    
+    app.use(securityMonitoring);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Security Checklist
+
+<Note>
+Use this comprehensive checklist to ensure your API security:
+</Note>
+
+### Authentication & Authorization
+- [ ] Implement strong authentication mechanisms
+- [ ] Use secure session management
+- [ ] Implement proper authorization checks
+- [ ] Use HTTPS for all communications
+- [ ] Implement token expiration and rotation
+- [ ] Use secure password hashing (bcrypt, Argon2)
+
+### Input Validation & Data Protection
+- [ ] Validate all input data
+- [ ] Use parameterized queries to prevent injection
+- [ ] Implement proper error handling
+- [ ] Sanitize output data
+- [ ] Encrypt sensitive data at rest
+- [ ] Implement data masking for logs
+
+### Rate Limiting & Monitoring
+- [ ] Implement rate limiting
+- [ ] Set up security monitoring and alerting
+- [ ] Log security events
+- [ ] Implement DDoS protection
+- [ ] Monitor for suspicious activities
+- [ ] Set up automated security testing
+
+### Infrastructure Security
+- [ ] Use security headers (HSTS, CSP, etc.)
+- [ ] Configure CORS properly
+- [ ] Keep dependencies updated
+- [ ] Use secure communication protocols
+- [ ] Implement proper backup and recovery
+- [ ] Regular security audits and penetration testing
+
+<Warning>
+Security is an ongoing process, not a one-time implementation. Regularly review and update your security measures.
+</Warning>

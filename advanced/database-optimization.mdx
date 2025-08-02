@@ -1,0 +1,1249 @@
+---
+title: 'Database Optimization'
+description: 'Advanced techniques for optimizing database performance, scaling, and reliability'
+icon: 'database'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/database-light.png"
+  alt="Database Optimization"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/database-dark.png"
+  alt="Database Optimization"
+/>
+
+## Introduction
+
+Database optimization is crucial for application performance and scalability. This guide covers advanced techniques for optimizing queries, indexing strategies, and database architecture.
+
+<Info>
+A well-optimized database can improve application performance by 10x or more while reducing infrastructure costs.
+</Info>
+
+## Database Performance Fundamentals
+
+<CardGroup cols={2}>
+  <Card
+    title="Query Optimization"
+    icon="magnifying-glass"
+    href="#query-optimization"
+  >
+    Techniques for writing efficient queries and analyzing execution plans
+  </Card>
+  <Card
+    title="Indexing Strategies"
+    icon="list-tree"
+    href="#indexing-strategies"
+  >
+    Creating and managing indexes for optimal performance
+  </Card>
+  <Card
+    title="Connection Management"
+    icon="network-wired"
+    href="#connection-pooling"
+  >
+    Efficient connection pooling and resource management
+  </Card>
+  <Card
+    title="Caching Layers"
+    icon="memory"
+    href="#caching-strategies"
+  >
+    Implementing effective caching strategies
+  </Card>
+</CardGroup>
+
+## Query Optimization
+
+### Analyzing Query Performance
+
+<Tabs>
+  <Tab title="PostgreSQL">
+    ```sql
+    -- Enable query timing
+    \timing on
+    
+    -- Analyze query execution plan
+    EXPLAIN (ANALYZE, BUFFERS, VERBOSE) 
+    SELECT u.name, COUNT(o.id) as order_count
+    FROM users u
+    LEFT JOIN orders o ON u.id = o.user_id
+    WHERE u.created_at > '2024-01-01'
+    GROUP BY u.id, u.name
+    HAVING COUNT(o.id) > 5;
+    
+    -- Check slow queries
+    SELECT query, mean_time, calls, total_time
+    FROM pg_stat_statements
+    ORDER BY mean_time DESC
+    LIMIT 10;
+    
+    -- Monitor table statistics
+    SELECT schemaname, tablename, n_tup_ins, n_tup_upd, n_tup_del
+    FROM pg_stat_user_tables
+    ORDER BY n_tup_ins + n_tup_upd + n_tup_del DESC;
+    ```
+  </Tab>
+  
+  <Tab title="MySQL">
+    ```sql
+    -- Enable slow query log
+    SET GLOBAL slow_query_log = 'ON';
+    SET GLOBAL long_query_time = 1;
+    
+    -- Analyze query execution
+    EXPLAIN FORMAT=JSON
+    SELECT u.name, COUNT(o.id) as order_count
+    FROM users u
+    LEFT JOIN orders o ON u.id = o.user_id
+    WHERE u.created_at > '2024-01-01'
+    GROUP BY u.id, u.name
+    HAVING COUNT(o.id) > 5;
+    
+    -- Check performance schema
+    SELECT digest_text, count_star, avg_timer_wait/1000000000 as avg_time_ms
+    FROM performance_schema.events_statements_summary_by_digest
+    ORDER BY avg_timer_wait DESC
+    LIMIT 10;
+    
+    -- Monitor table usage
+    SELECT object_schema, object_name, count_read, count_write
+    FROM performance_schema.table_io_waits_summary_by_table
+    ORDER BY count_read + count_write DESC;
+    ```
+  </Tab>
+  
+  <Tab title="MongoDB">
+    ```javascript
+    // Enable profiling
+    db.setProfilingLevel(2, { slowms: 100 });
+    
+    // Analyze query performance
+    db.users.find({ created_at: { $gt: new Date('2024-01-01') } })
+           .explain('executionStats');
+    
+    // Check slow operations
+    db.system.profile.find()
+                    .sort({ ts: -1 })
+                    .limit(10);
+    
+    // Index usage statistics
+    db.users.aggregate([
+      { $indexStats: {} }
+    ]);
+    
+    // Collection statistics
+    db.users.stats();
+    ```
+  </Tab>
+</Tabs>
+
+### Query Optimization Techniques
+
+<AccordionGroup>
+  <Accordion title="Efficient WHERE Clauses" icon="filter">
+    ```sql
+    -- ❌ Inefficient: Function on indexed column
+    SELECT * FROM orders WHERE YEAR(created_at) = 2024;
+    
+    -- ✅ Efficient: Range query on indexed column
+    SELECT * FROM orders 
+    WHERE created_at >= '2024-01-01' 
+      AND created_at < '2025-01-01';
+    
+    -- ❌ Inefficient: Leading wildcard
+    SELECT * FROM users WHERE email LIKE '%@gmail.com';
+    
+    -- ✅ Efficient: Use full-text search or specialized index
+    SELECT * FROM users WHERE email LIKE 'john%';
+    
+    -- ❌ Inefficient: OR conditions on different columns
+    SELECT * FROM products WHERE name = 'iPhone' OR category = 'Electronics';
+    
+    -- ✅ Efficient: Use UNION for OR conditions on different indexes
+    SELECT * FROM products WHERE name = 'iPhone'
+    UNION
+    SELECT * FROM products WHERE category = 'Electronics';
+    ```
+  </Accordion>
+  
+  <Accordion title="JOIN Optimization" icon="link">
+    ```sql
+    -- ✅ Efficient JOIN with proper indexes
+    SELECT u.name, p.title
+    FROM users u
+    INNER JOIN posts p ON u.id = p.user_id
+    WHERE u.active = true
+      AND p.published_at > '2024-01-01';
+    
+    -- ✅ Use EXISTS instead of IN for large subqueries
+    SELECT * FROM users u
+    WHERE EXISTS (
+      SELECT 1 FROM orders o 
+      WHERE o.user_id = u.id 
+        AND o.total > 1000
+    );
+    
+    -- ✅ Optimize subqueries with proper indexing
+    SELECT u.*, 
+           (SELECT COUNT(*) FROM orders WHERE user_id = u.id) as order_count
+    FROM users u
+    WHERE u.created_at > '2024-01-01';
+    ```
+  </Accordion>
+  
+  <Accordion title="Aggregation Optimization" icon="chart-bar">
+    ```sql
+    -- ✅ Use covering indexes for aggregations
+    CREATE INDEX idx_orders_user_total ON orders(user_id, total);
+    
+    SELECT user_id, SUM(total) as total_spent
+    FROM orders
+    GROUP BY user_id;
+    
+    -- ✅ Optimize GROUP BY with proper ordering
+    SELECT category, COUNT(*) as product_count
+    FROM products
+    WHERE active = true
+    GROUP BY category
+    ORDER BY category; -- Matches GROUP BY order
+    
+    -- ✅ Use materialized views for complex aggregations
+    CREATE MATERIALIZED VIEW user_order_summary AS
+    SELECT 
+      u.id,
+      u.name,
+      COUNT(o.id) as order_count,
+      SUM(o.total) as total_spent,
+      MAX(o.created_at) as last_order_date
+    FROM users u
+    LEFT JOIN orders o ON u.id = o.user_id
+    GROUP BY u.id, u.name;
+    
+    -- Refresh materialized view periodically
+    REFRESH MATERIALIZED VIEW user_order_summary;
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Indexing Strategies
+
+### Index Types and Usage
+
+<CodeGroup>
+
+```sql B-Tree Indexes (Default)
+-- Primary key index (automatically created)
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  email VARCHAR(255) UNIQUE,
+  name VARCHAR(255),
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Single column index
+CREATE INDEX idx_users_email ON users(email);
+
+-- Composite index (order matters!)
+CREATE INDEX idx_users_name_created ON users(name, created_at);
+
+-- Partial index (PostgreSQL)
+CREATE INDEX idx_active_users ON users(email) WHERE active = true;
+
+-- Functional index
+CREATE INDEX idx_users_lower_email ON users(LOWER(email));
+```
+
+```sql Specialized Indexes
+-- Full-text search index (PostgreSQL)
+CREATE INDEX idx_posts_search ON posts USING gin(to_tsvector('english', title || ' ' || content));
+
+-- JSON/JSONB index (PostgreSQL)
+CREATE INDEX idx_user_preferences ON users USING gin(preferences);
+
+-- Spatial index (PostGIS)
+CREATE INDEX idx_locations_geom ON locations USING gist(geom);
+
+-- Hash index (for equality comparisons only)
+CREATE INDEX idx_users_status_hash ON users USING hash(status);
+
+-- Bloom filter index (PostgreSQL)
+CREATE INDEX idx_products_bloom ON products USING bloom(category, brand, color);
+```
+
+```javascript MongoDB Indexes
+// Single field index
+db.users.createIndex({ email: 1 });
+
+// Compound index
+db.orders.createIndex({ user_id: 1, created_at: -1 });
+
+// Text index for full-text search
+db.posts.createIndex({ 
+  title: "text", 
+  content: "text" 
+});
+
+// Geospatial index
+db.locations.createIndex({ coordinates: "2dsphere" });
+
+// Sparse index (only indexes documents with the field)
+db.users.createIndex({ phone: 1 }, { sparse: true });
+
+// Partial index with filter
+db.orders.createIndex(
+  { user_id: 1 },
+  { partialFilterExpression: { status: "active" } }
+);
+
+// TTL index for automatic document expiration
+db.sessions.createIndex(
+  { created_at: 1 },
+  { expireAfterSeconds: 3600 }
+);
+```
+
+</CodeGroup>
+
+### Index Maintenance
+
+<Steps>
+  <Step title="Monitor Index Usage">
+    ```sql
+    -- PostgreSQL: Check index usage
+    SELECT 
+      schemaname,
+      tablename,
+      indexname,
+      idx_tup_read,
+      idx_tup_fetch,
+      idx_scan
+    FROM pg_stat_user_indexes
+    ORDER BY idx_scan DESC;
+    
+    -- Find unused indexes
+    SELECT 
+      schemaname,
+      tablename,
+      indexname,
+      pg_size_pretty(pg_relation_size(indexrelid)) as size
+    FROM pg_stat_user_indexes
+    WHERE idx_scan = 0
+      AND schemaname = 'public';
+    ```
+  </Step>
+  
+  <Step title="Analyze Index Effectiveness">
+    ```sql
+    -- Check index selectivity
+    SELECT 
+      attname,
+      n_distinct,
+      correlation,
+      most_common_vals
+    FROM pg_stats
+    WHERE tablename = 'users'
+      AND schemaname = 'public';
+    
+    -- Analyze table and update statistics
+    ANALYZE users;
+    
+    -- Check for duplicate indexes
+    SELECT 
+      t.tablename,
+      array_agg(t.indexname) as duplicate_indexes
+    FROM (
+      SELECT 
+        tablename,
+        indexname,
+        string_agg(attname, ',' ORDER BY attnum) as columns
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+      WHERE c.relname NOT LIKE 'pg_%'
+      GROUP BY tablename, indexname
+    ) t
+    GROUP BY t.tablename, t.columns
+    HAVING COUNT(*) > 1;
+    ```
+  </Step>
+  
+  <Step title="Index Maintenance Tasks">
+    ```sql
+    -- Rebuild indexes (PostgreSQL)
+    REINDEX INDEX idx_users_email;
+    REINDEX TABLE users;
+    
+    -- Update table statistics
+    ANALYZE users;
+    
+    -- Check index bloat
+    SELECT 
+      schemaname,
+      tablename,
+      indexname,
+      pg_size_pretty(pg_relation_size(indexrelid)) as size,
+      round(100 * (pg_relation_size(indexrelid) - pg_relation_size(indexrelid, 'main')) / pg_relation_size(indexrelid)::numeric, 2) as bloat_pct
+    FROM pg_stat_user_indexes
+    WHERE pg_relation_size(indexrelid) > 1024 * 1024; -- > 1MB
+    ```
+  </Step>
+</Steps>
+
+## Connection Pooling
+
+<Tabs>
+  <Tab title="Node.js (pg-pool)">
+    ```javascript
+    const { Pool } = require('pg');
+    
+    const pool = new Pool({
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      
+      // Connection pool settings
+      max: 20, // Maximum connections
+      min: 5,  // Minimum connections
+      idleTimeoutMillis: 30000, // Close idle connections after 30s
+      connectionTimeoutMillis: 2000, // Timeout for new connections
+      
+      // Connection validation
+      allowExitOnIdle: true,
+      
+      // SSL configuration
+      ssl: process.env.NODE_ENV === 'production' ? {
+        rejectUnauthorized: false
+      } : false
+    });
+    
+    // Graceful shutdown
+    process.on('SIGINT', async () => {
+      console.log('Closing database pool...');
+      await pool.end();
+      process.exit(0);
+    });
+    
+    // Usage with error handling
+    async function getUser(id) {
+      const client = await pool.connect();
+      try {
+        const result = await client.query('SELECT * FROM users WHERE id = $1', [id]);
+        return result.rows[0];
+      } catch (error) {
+        console.error('Database query error:', error);
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+    
+    // Transaction example
+    async function transferFunds(fromId, toId, amount) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        
+        await client.query(
+          'UPDATE accounts SET balance = balance - $1 WHERE id = $2',
+          [amount, fromId]
+        );
+        
+        await client.query(
+          'UPDATE accounts SET balance = balance + $1 WHERE id = $2',
+          [amount, toId]
+        );
+        
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Python (SQLAlchemy)">
+    ```python
+    from sqlalchemy import create_engine, pool
+    from sqlalchemy.orm import sessionmaker
+    import os
+    
+    # Database URL
+    DATABASE_URL = f"postgresql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_HOST')}:{os.getenv('DB_PORT')}/{os.getenv('DB_NAME')}"
+    
+    # Create engine with connection pooling
+    engine = create_engine(
+        DATABASE_URL,
+        
+        # Connection pool settings
+        pool_size=20,           # Number of connections to maintain
+        max_overflow=30,        # Additional connections beyond pool_size
+        pool_timeout=30,        # Timeout for getting connection
+        pool_recycle=3600,      # Recycle connections after 1 hour
+        pool_pre_ping=True,     # Validate connections before use
+        
+        # Connection pool class
+        poolclass=pool.QueuePool,
+        
+        # Echo SQL queries (development only)
+        echo=os.getenv('DEBUG') == 'true'
+    )
+    
+    # Session factory
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    
+    # Context manager for database sessions
+    from contextlib import contextmanager
+    
+    @contextmanager
+    def get_db_session():
+        session = SessionLocal()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+    
+    # Usage example
+    def get_user(user_id: int):
+        with get_db_session() as session:
+            return session.query(User).filter(User.id == user_id).first()
+    
+    # Async version with asyncpg
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    
+    async_engine = create_async_engine(
+        DATABASE_URL.replace('postgresql://', 'postgresql+asyncpg://'),
+        pool_size=20,
+        max_overflow=30,
+        pool_timeout=30,
+        pool_recycle=3600
+    )
+    
+    AsyncSessionLocal = sessionmaker(
+        async_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    ```
+  </Tab>
+  
+  <Tab title="Java (HikariCP)">
+    ```java
+    import com.zaxxer.hikari.HikariConfig;
+    import com.zaxxer.hikari.HikariDataSource;
+    
+    public class DatabaseConfig {
+        private static HikariDataSource dataSource;
+        
+        static {
+            HikariConfig config = new HikariConfig();
+            
+            // Database connection
+            config.setJdbcUrl("jdbc:postgresql://localhost:5432/mydb");
+            config.setUsername("username");
+            config.setPassword("password");
+            
+            // Connection pool settings
+            config.setMaximumPoolSize(20);
+            config.setMinimumIdle(5);
+            config.setConnectionTimeout(30000);      // 30 seconds
+            config.setIdleTimeout(600000);           // 10 minutes
+            config.setMaxLifetime(1800000);          // 30 minutes
+            config.setLeakDetectionThreshold(60000); // 1 minute
+            
+            // Connection validation
+            config.setConnectionTestQuery("SELECT 1");
+            config.setValidationTimeout(5000);
+            
+            // Performance settings
+            config.addDataSourceProperty("cachePrepStmts", "true");
+            config.addDataSourceProperty("prepStmtCacheSize", "250");
+            config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
+            
+            dataSource = new HikariDataSource(config);
+        }
+        
+        public static Connection getConnection() throws SQLException {
+            return dataSource.getConnection();
+        }
+        
+        public static void close() {
+            if (dataSource != null) {
+                dataSource.close();
+            }
+        }
+    }
+    
+    // Usage with try-with-resources
+    public User getUser(int userId) throws SQLException {
+        String sql = "SELECT * FROM users WHERE id = ?";
+        
+        try (Connection conn = DatabaseConfig.getConnection();
+             PreparedStatement stmt = conn.prepareStatement(sql)) {
+            
+            stmt.setInt(1, userId);
+            
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return new User(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getString("email")
+                    );
+                }
+            }
+        }
+        return null;
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Caching Strategies
+
+### Multi-Level Caching
+
+<CodeGroup>
+
+```javascript Application-Level Caching
+const NodeCache = require('node-cache');
+const Redis = require('redis');
+
+// In-memory cache (L1)
+const memoryCache = new NodeCache({
+  stdTTL: 300, // 5 minutes
+  checkperiod: 60, // Check for expired keys every minute
+  maxKeys: 1000 // Maximum number of keys
+});
+
+// Redis cache (L2)
+const redisClient = Redis.createClient({
+  host: process.env.REDIS_HOST,
+  port: process.env.REDIS_PORT,
+  password: process.env.REDIS_PASSWORD,
+  db: 0,
+  retry_strategy: (options) => {
+    if (options.error && options.error.code === 'ECONNREFUSED') {
+      return new Error('Redis server connection refused');
+    }
+    if (options.total_retry_time > 1000 * 60 * 60) {
+      return new Error('Redis retry time exhausted');
+    }
+    if (options.attempt > 10) {
+      return undefined;
+    }
+    return Math.min(options.attempt * 100, 3000);
+  }
+});
+
+class CacheManager {
+  async get(key) {
+    // Try L1 cache first
+    let value = memoryCache.get(key);
+    if (value !== undefined) {
+      return value;
+    }
+    
+    // Try L2 cache (Redis)
+    try {
+      const redisValue = await redisClient.get(key);
+      if (redisValue) {
+        value = JSON.parse(redisValue);
+        // Store in L1 cache for faster access
+        memoryCache.set(key, value, 300);
+        return value;
+      }
+    } catch (error) {
+      console.error('Redis error:', error);
+    }
+    
+    return null;
+  }
+  
+  async set(key, value, ttl = 3600) {
+    // Store in both caches
+    memoryCache.set(key, value, Math.min(ttl, 300));
+    
+    try {
+      await redisClient.setex(key, ttl, JSON.stringify(value));
+    } catch (error) {
+      console.error('Redis set error:', error);
+    }
+  }
+  
+  async del(key) {
+    memoryCache.del(key);
+    
+    try {
+      await redisClient.del(key);
+    } catch (error) {
+      console.error('Redis delete error:', error);
+    }
+  }
+  
+  async invalidatePattern(pattern) {
+    // Clear memory cache (simple approach)
+    memoryCache.flushAll();
+    
+    // Clear Redis cache by pattern
+    try {
+      const keys = await redisClient.keys(pattern);
+      if (keys.length > 0) {
+        await redisClient.del(...keys);
+      }
+    } catch (error) {
+      console.error('Redis pattern invalidation error:', error);
+    }
+  }
+}
+
+const cache = new CacheManager();
+
+// Usage in API endpoints
+async function getUser(userId) {
+  const cacheKey = `user:${userId}`;
+  
+  // Try cache first
+  let user = await cache.get(cacheKey);
+  if (user) {
+    return user;
+  }
+  
+  // Fetch from database
+  user = await db.users.findById(userId);
+  if (user) {
+    // Cache for 1 hour
+    await cache.set(cacheKey, user, 3600);
+  }
+  
+  return user;
+}
+```
+
+```javascript Query Result Caching
+// Cache expensive query results
+class QueryCache {
+  constructor(cache, defaultTTL = 3600) {
+    this.cache = cache;
+    this.defaultTTL = defaultTTL;
+  }
+  
+  generateKey(query, params = []) {
+    const crypto = require('crypto');
+    const keyData = JSON.stringify({ query, params });
+    return `query:${crypto.createHash('md5').update(keyData).digest('hex')}`;
+  }
+  
+  async execute(query, params = [], ttl = this.defaultTTL) {
+    const cacheKey = this.generateKey(query, params);
+    
+    // Try cache first
+    let result = await this.cache.get(cacheKey);
+    if (result) {
+      return result;
+    }
+    
+    // Execute query
+    result = await db.query(query, params);
+    
+    // Cache result
+    await this.cache.set(cacheKey, result, ttl);
+    
+    return result;
+  }
+  
+  async invalidateByPattern(pattern) {
+    await this.cache.invalidatePattern(`query:*${pattern}*`);
+  }
+}
+
+const queryCache = new QueryCache(cache);
+
+// Usage
+async function getUserOrders(userId, limit = 10) {
+  const query = `
+    SELECT o.*, p.name as product_name
+    FROM orders o
+    JOIN products p ON o.product_id = p.id
+    WHERE o.user_id = $1
+    ORDER BY o.created_at DESC
+    LIMIT $2
+  `;
+  
+  return await queryCache.execute(query, [userId, limit], 1800); // 30 minutes
+}
+
+// Invalidate cache when data changes
+async function createOrder(orderData) {
+  const order = await db.orders.create(orderData);
+  
+  // Invalidate related caches
+  await cache.del(`user:${orderData.user_id}`);
+  await queryCache.invalidateByPattern(`user:${orderData.user_id}`);
+  
+  return order;
+}
+```
+
+</CodeGroup>
+
+### Cache Warming and Preloading
+
+<AccordionGroup>
+  <Accordion title="Scheduled Cache Warming" icon="clock">
+    ```javascript
+    const cron = require('node-cron');
+    
+    class CacheWarmer {
+      constructor(cache, db) {
+        this.cache = cache;
+        this.db = db;
+      }
+      
+      async warmUserCache() {
+        console.log('Starting user cache warming...');
+        
+        // Get active users from last 30 days
+        const activeUsers = await this.db.query(`
+          SELECT id FROM users 
+          WHERE last_login > NOW() - INTERVAL '30 days'
+          ORDER BY last_login DESC
+          LIMIT 1000
+        `);
+        
+        for (const user of activeUsers) {
+          try {
+            const userData = await this.db.users.findById(user.id);
+            await this.cache.set(`user:${user.id}`, userData, 3600);
+            
+            // Small delay to avoid overwhelming the database
+            await new Promise(resolve => setTimeout(resolve, 10));
+          } catch (error) {
+            console.error(`Error warming cache for user ${user.id}:`, error);
+          }
+        }
+        
+        console.log(`Warmed cache for ${activeUsers.length} users`);
+      }
+      
+      async warmPopularContent() {
+        console.log('Starting popular content cache warming...');
+        
+        // Cache popular products
+        const popularProducts = await this.db.query(`
+          SELECT p.id, p.*, COUNT(oi.id) as order_count
+          FROM products p
+          JOIN order_items oi ON p.id = oi.product_id
+          WHERE oi.created_at > NOW() - INTERVAL '7 days'
+          GROUP BY p.id
+          ORDER BY order_count DESC
+          LIMIT 100
+        `);
+        
+        for (const product of popularProducts) {
+          await this.cache.set(`product:${product.id}`, product, 7200); // 2 hours
+        }
+        
+        console.log(`Warmed cache for ${popularProducts.length} popular products`);
+      }
+      
+      async warmDashboardData() {
+        console.log('Starting dashboard cache warming...');
+        
+        // Pre-calculate dashboard metrics
+        const metrics = await this.db.query(`
+          SELECT 
+            COUNT(DISTINCT u.id) as total_users,
+            COUNT(DISTINCT o.id) as total_orders,
+            SUM(o.total) as total_revenue,
+            AVG(o.total) as avg_order_value
+          FROM users u
+          LEFT JOIN orders o ON u.id = o.user_id
+          WHERE o.created_at > NOW() - INTERVAL '30 days'
+        `);
+        
+        await this.cache.set('dashboard:metrics', metrics[0], 1800); // 30 minutes
+        
+        console.log('Dashboard cache warmed');
+      }
+    }
+    
+    const cacheWarmer = new CacheWarmer(cache, db);
+    
+    // Schedule cache warming
+    // Every hour at minute 0
+    cron.schedule('0 * * * *', () => {
+      cacheWarmer.warmUserCache();
+    });
+    
+    // Every 2 hours at minute 15
+    cron.schedule('15 */2 * * *', () => {
+      cacheWarmer.warmPopularContent();
+    });
+    
+    // Every 30 minutes
+    cron.schedule('*/30 * * * *', () => {
+      cacheWarmer.warmDashboardData();
+    });
+    ```
+  </Accordion>
+  
+  <Accordion title="Predictive Cache Loading" icon="crystal-ball">
+    ```javascript
+    class PredictiveCacheLoader {
+      constructor(cache, db) {
+        this.cache = cache;
+        this.db = db;
+        this.accessPatterns = new Map();
+      }
+      
+      // Track access patterns
+      recordAccess(userId, resourceType, resourceId) {
+        const key = `${userId}:${resourceType}`;
+        
+        if (!this.accessPatterns.has(key)) {
+          this.accessPatterns.set(key, []);
+        }
+        
+        const pattern = this.accessPatterns.get(key);
+        pattern.push({
+          resourceId,
+          timestamp: Date.now()
+        });
+        
+        // Keep only recent accesses (last 24 hours)
+        const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+        this.accessPatterns.set(key, 
+          pattern.filter(p => p.timestamp > oneDayAgo)
+        );
+      }
+      
+      // Predict and preload likely next resources
+      async predictAndLoad(userId, resourceType, currentResourceId) {
+        const key = `${userId}:${resourceType}`;
+        const pattern = this.accessPatterns.get(key) || [];
+        
+        if (pattern.length < 3) return; // Need some history
+        
+        // Find resources commonly accessed after current resource
+        const nextResources = new Map();
+        
+        for (let i = 0; i < pattern.length - 1; i++) {
+          if (pattern[i].resourceId === currentResourceId) {
+            const nextId = pattern[i + 1].resourceId;
+            nextResources.set(nextId, (nextResources.get(nextId) || 0) + 1);
+          }
+        }
+        
+        // Sort by frequency and preload top candidates
+        const candidates = Array.from(nextResources.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3); // Top 3 candidates
+        
+        for (const [resourceId, frequency] of candidates) {
+          if (frequency >= 2) { // Only if accessed together at least twice
+            this.preloadResource(resourceType, resourceId);
+          }
+        }
+      }
+      
+      async preloadResource(resourceType, resourceId) {
+        const cacheKey = `${resourceType}:${resourceId}`;
+        
+        // Check if already cached
+        const cached = await this.cache.get(cacheKey);
+        if (cached) return;
+        
+        try {
+          let resource;
+          
+          switch (resourceType) {
+            case 'user':
+              resource = await this.db.users.findById(resourceId);
+              break;
+            case 'product':
+              resource = await this.db.products.findById(resourceId);
+              break;
+            case 'order':
+              resource = await this.db.orders.findById(resourceId);
+              break;
+            default:
+              return;
+          }
+          
+          if (resource) {
+            await this.cache.set(cacheKey, resource, 1800); // 30 minutes
+            console.log(`Pre-loaded ${resourceType}:${resourceId}`);
+          }
+        } catch (error) {
+          console.error(`Error preloading ${resourceType}:${resourceId}:`, error);
+        }
+      }
+    }
+    
+    const predictiveLoader = new PredictiveCacheLoader(cache, db);
+    
+    // Usage in API endpoints
+    app.get('/api/users/:id', async (req, res) => {
+      const userId = req.params.id;
+      const user = await getUser(userId);
+      
+      // Record access pattern
+      predictiveLoader.recordAccess(req.user.id, 'user', userId);
+      
+      // Predict and preload next likely resources
+      predictiveLoader.predictAndLoad(req.user.id, 'user', userId);
+      
+      res.json(user);
+    });
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Database Scaling Strategies
+
+<CardGroup cols={2}>
+  <Card
+    title="Read Replicas"
+    icon="copy"
+  >
+    Distribute read queries across multiple database replicas
+  </Card>
+  <Card
+    title="Horizontal Sharding"
+    icon="table-columns"
+  >
+    Partition data across multiple database instances
+  </Card>
+  <Card
+    title="Vertical Partitioning"
+    icon="table-rows"
+  >
+    Split tables by columns to reduce I/O and improve performance
+  </Card>
+  <Card
+    title="Connection Pooling"
+    icon="network-wired"
+  >
+    Efficiently manage database connections and resources
+  </Card>
+</CardGroup>
+
+## Monitoring and Maintenance
+
+<Warning>
+Regular monitoring and maintenance are essential for optimal database performance.
+</Warning>
+
+<Tabs>
+  <Tab title="Performance Monitoring">
+    ```javascript
+    const prometheus = require('prom-client');
+    
+    // Database metrics
+    const dbConnectionsGauge = new prometheus.Gauge({
+      name: 'db_connections_active',
+      help: 'Number of active database connections'
+    });
+    
+    const dbQueryDuration = new prometheus.Histogram({
+      name: 'db_query_duration_seconds',
+      help: 'Database query duration in seconds',
+      labelNames: ['query_type', 'table']
+    });
+    
+    const dbQueryErrors = new prometheus.Counter({
+      name: 'db_query_errors_total',
+      help: 'Total number of database query errors',
+      labelNames: ['error_type']
+    });
+    
+    // Monitor database performance
+    class DatabaseMonitor {
+      constructor(pool) {
+        this.pool = pool;
+        this.startMonitoring();
+      }
+      
+      startMonitoring() {
+        // Monitor connection pool
+        setInterval(() => {
+          dbConnectionsGauge.set(this.pool.totalCount);
+        }, 5000);
+        
+        // Monitor slow queries
+        this.pool.on('connect', (client) => {
+          const originalQuery = client.query;
+          
+          client.query = function(text, params, callback) {
+            const start = Date.now();
+            const queryType = text.trim().split(' ')[0].toUpperCase();
+            
+            const result = originalQuery.call(this, text, params, (err, result) => {
+              const duration = (Date.now() - start) / 1000;
+              
+              // Record metrics
+              dbQueryDuration
+                .labels(queryType, 'unknown')
+                .observe(duration);
+              
+              if (err) {
+                dbQueryErrors
+                  .labels(err.code || 'unknown')
+                  .inc();
+              }
+              
+              // Log slow queries
+              if (duration > 1) {
+                console.warn(`Slow query detected (${duration}s):`, {
+                  query: text,
+                  params,
+                  duration
+                });
+              }
+              
+              if (callback) callback(err, result);
+            });
+            
+            return result;
+          };
+        });
+      }
+    }
+    
+    const monitor = new DatabaseMonitor(pool);
+    ```
+  </Tab>
+  
+  <Tab title="Health Checks">
+    ```javascript
+    class DatabaseHealthCheck {
+      constructor(pool) {
+        this.pool = pool;
+      }
+      
+      async checkHealth() {
+        const checks = {
+          connection: false,
+          queryPerformance: false,
+          diskSpace: false,
+          replication: false
+        };
+        
+        try {
+          // Test basic connectivity
+          const client = await this.pool.connect();
+          const result = await client.query('SELECT 1');
+          client.release();
+          checks.connection = result.rows[0]['?column?'] === 1;
+          
+          // Test query performance
+          const start = Date.now();
+          const perfClient = await this.pool.connect();
+          await perfClient.query('SELECT COUNT(*) FROM users LIMIT 1');
+          perfClient.release();
+          const queryTime = Date.now() - start;
+          checks.queryPerformance = queryTime < 1000; // Less than 1 second
+          
+          // Check disk space (PostgreSQL specific)
+          const diskClient = await this.pool.connect();
+          const diskResult = await diskClient.query(`
+            SELECT 
+              pg_size_pretty(pg_database_size(current_database())) as db_size,
+              pg_size_pretty(pg_total_relation_size('users')) as users_table_size
+          `);
+          diskClient.release();
+          checks.diskSpace = true; // Assume OK if query succeeds
+          
+          // Check replication lag (if using replicas)
+          if (process.env.REPLICA_HOST) {
+            const replicaClient = await this.pool.connect();
+            const lagResult = await replicaClient.query(`
+              SELECT 
+                CASE 
+                  WHEN pg_is_in_recovery() THEN 
+                    EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp()))
+                  ELSE 0 
+                END as lag_seconds
+            `);
+            replicaClient.release();
+            checks.replication = lagResult.rows[0].lag_seconds < 60; // Less than 1 minute lag
+          } else {
+            checks.replication = true; // No replica configured
+          }
+          
+        } catch (error) {
+          console.error('Database health check failed:', error);
+        }
+        
+        return {
+          healthy: Object.values(checks).every(check => check),
+          checks,
+          timestamp: new Date().toISOString()
+        };
+      }
+    }
+    
+    const healthCheck = new DatabaseHealthCheck(pool);
+    
+    // Health check endpoint
+    app.get('/health/database', async (req, res) => {
+      const health = await healthCheck.checkHealth();
+      const status = health.healthy ? 200 : 503;
+      res.status(status).json(health);
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Best Practices Summary
+
+<Note>
+Follow these best practices for optimal database performance:
+</Note>
+
+### Query Optimization
+- [ ] Use EXPLAIN to analyze query execution plans
+- [ ] Avoid SELECT * in production queries
+- [ ] Use appropriate WHERE clause conditions
+- [ ] Optimize JOIN operations and order
+- [ ] Use LIMIT for large result sets
+- [ ] Consider query result caching
+
+### Indexing
+- [ ] Create indexes on frequently queried columns
+- [ ] Use composite indexes for multi-column queries
+- [ ] Monitor and remove unused indexes
+- [ ] Consider partial indexes for filtered queries
+- [ ] Regular index maintenance and statistics updates
+
+### Connection Management
+- [ ] Implement connection pooling
+- [ ] Set appropriate pool sizes
+- [ ] Monitor connection usage
+- [ ] Handle connection errors gracefully
+- [ ] Use transactions appropriately
+
+### Caching
+- [ ] Implement multi-level caching
+- [ ] Cache expensive query results
+- [ ] Use appropriate TTL values
+- [ ] Implement cache invalidation strategies
+- [ ] Monitor cache hit rates
+
+### Monitoring
+- [ ] Set up performance monitoring
+- [ ] Track slow queries
+- [ ] Monitor resource usage
+- [ ] Implement health checks
+- [ ] Set up alerting for issues

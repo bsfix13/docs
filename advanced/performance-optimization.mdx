@@ -1,0 +1,497 @@
+---
+title: 'Performance Optimization'
+description: 'Advanced techniques for optimizing application performance and scalability'
+icon: 'gauge-high'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/performance-light.png"
+  alt="Performance Optimization"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/performance-dark.png"
+  alt="Performance Optimization"
+/>
+
+## Introduction
+
+Performance optimization is crucial for delivering exceptional user experiences. This guide covers advanced techniques for optimizing both frontend and backend performance.
+
+<Info>
+A 1-second delay in page load time can result in a 7% reduction in conversions.
+</Info>
+
+## Performance Metrics
+
+Understanding key performance indicators helps you measure and improve your application's performance.
+
+<CardGroup cols={3}>
+  <Card
+    title="Core Web Vitals"
+    icon="chart-line"
+  >
+    LCP, FID, and CLS metrics that Google uses for ranking
+  </Card>
+  <Card
+    title="Time to Interactive"
+    icon="stopwatch"
+  >
+    How quickly users can interact with your page
+  </Card>
+  <Card
+    title="First Contentful Paint"
+    icon="paintbrush"
+  >
+    When the first content appears on screen
+  </Card>
+</CardGroup>
+
+## Frontend Optimization
+
+### Code Splitting and Lazy Loading
+
+Reduce initial bundle size by loading code only when needed:
+
+<CodeGroup>
+
+```javascript React
+import { lazy, Suspense } from 'react';
+
+// Lazy load components
+const Dashboard = lazy(() => import('./Dashboard'));
+const Profile = lazy(() => import('./Profile'));
+
+function App() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <Routes>
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/profile" element={<Profile />} />
+      </Routes>
+    </Suspense>
+  );
+}
+```
+
+```javascript Webpack
+// Dynamic imports for code splitting
+async function loadModule() {
+  const { heavyFunction } = await import('./heavyModule');
+  return heavyFunction();
+}
+
+// Route-based splitting
+const routes = [
+  {
+    path: '/dashboard',
+    component: () => import('./pages/Dashboard')
+  }
+];
+```
+
+</CodeGroup>
+
+### Image Optimization
+
+<Tabs>
+  <Tab title="Next.js Image">
+    ```jsx
+    import Image from 'next/image';
+    
+    function OptimizedImage() {
+      return (
+        <Image
+          src="/hero.jpg"
+          alt="Hero image"
+          width={800}
+          height={600}
+          priority
+          placeholder="blur"
+          blurDataURL="data:image/jpeg;base64,..."
+        />
+      );
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Responsive Images">
+    ```html
+    <picture>
+      <source 
+        media="(min-width: 800px)" 
+        srcset="hero-large.webp"
+        type="image/webp"
+      />
+      <source 
+        media="(min-width: 400px)" 
+        srcset="hero-medium.webp"
+        type="image/webp"
+      />
+      <img 
+        src="hero-small.jpg" 
+        alt="Hero image"
+        loading="lazy"
+      />
+    </picture>
+    ```
+  </Tab>
+  
+  <Tab title="CSS Optimization">
+    ```css
+    /* Use CSS containment */
+    .card {
+      contain: layout style paint;
+    }
+    
+    /* Optimize animations */
+    .smooth-animation {
+      transform: translateX(0);
+      transition: transform 0.3s ease;
+      will-change: transform;
+    }
+    
+    /* Critical CSS inlining */
+    .above-fold {
+      /* Critical styles here */
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Backend Optimization
+
+### Database Performance
+
+<AccordionGroup>
+  <Accordion title="Query Optimization" icon="database">
+    ```sql
+    -- Use indexes effectively
+    CREATE INDEX idx_user_email ON users(email);
+    CREATE INDEX idx_order_date ON orders(created_at);
+    
+    -- Optimize queries
+    SELECT u.name, COUNT(o.id) as order_count
+    FROM users u
+    LEFT JOIN orders o ON u.id = o.user_id
+    WHERE u.created_at > '2024-01-01'
+    GROUP BY u.id, u.name
+    HAVING COUNT(o.id) > 5;
+    ```
+  </Accordion>
+  
+  <Accordion title="Connection Pooling" icon="network-wired">
+    ```javascript
+    const { Pool } = require('pg');
+    
+    const pool = new Pool({
+      host: 'localhost',
+      database: 'myapp',
+      max: 20, // Maximum connections
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
+    
+    // Use pool for queries
+    async function getUser(id) {
+      const client = await pool.connect();
+      try {
+        const result = await client.query('SELECT * FROM users WHERE id = $1', [id]);
+        return result.rows[0];
+      } finally {
+        client.release();
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Caching Strategies" icon="memory">
+    ```javascript
+    const Redis = require('redis');
+    const client = Redis.createClient();
+    
+    // Cache frequently accessed data
+    async function getCachedUser(userId) {
+      const cacheKey = `user:${userId}`;
+      
+      // Try cache first
+      let user = await client.get(cacheKey);
+      if (user) {
+        return JSON.parse(user);
+      }
+      
+      // Fetch from database
+      user = await database.getUser(userId);
+      
+      // Cache for 1 hour
+      await client.setex(cacheKey, 3600, JSON.stringify(user));
+      
+      return user;
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### API Optimization
+
+<Steps>
+  <Step title="Implement Pagination">
+    ```javascript
+    app.get('/api/posts', async (req, res) => {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const offset = (page - 1) * limit;
+      
+      const posts = await Post.findAndCountAll({
+        limit,
+        offset,
+        order: [['createdAt', 'DESC']]
+      });
+      
+      res.json({
+        data: posts.rows,
+        pagination: {
+          page,
+          limit,
+          total: posts.count,
+          pages: Math.ceil(posts.count / limit)
+        }
+      });
+    });
+    ```
+  </Step>
+  
+  <Step title="Add Response Compression">
+    ```javascript
+    const compression = require('compression');
+    
+    app.use(compression({
+      level: 6,
+      threshold: 1024,
+      filter: (req, res) => {
+        if (req.headers['x-no-compression']) {
+          return false;
+        }
+        return compression.filter(req, res);
+      }
+    }));
+    ```
+  </Step>
+  
+  <Step title="Implement Rate Limiting">
+    ```javascript
+    const rateLimit = require('express-rate-limit');
+    
+    const limiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 100, // Limit each IP to 100 requests per windowMs
+      message: 'Too many requests from this IP'
+    });
+    
+    app.use('/api/', limiter);
+    ```
+  </Step>
+</Steps>
+
+## Monitoring and Analytics
+
+### Performance Monitoring
+
+<CodeGroup>
+
+```javascript Web Vitals
+import { getCLS, getFID, getFCP, getLCP, getTTFB } from 'web-vitals';
+
+function sendToAnalytics(metric) {
+  // Send to your analytics service
+  analytics.track('Web Vital', {
+    name: metric.name,
+    value: metric.value,
+    id: metric.id,
+  });
+}
+
+// Measure all Web Vitals
+getCLS(sendToAnalytics);
+getFID(sendToAnalytics);
+getFCP(sendToAnalytics);
+getLCP(sendToAnalytics);
+getTTFB(sendToAnalytics);
+```
+
+```javascript Server Monitoring
+const express = require('express');
+const prometheus = require('prom-client');
+
+// Create metrics
+const httpDuration = new prometheus.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method', 'route', 'status']
+});
+
+// Middleware to track metrics
+app.use((req, res, next) => {
+  const start = Date.now();
+  
+  res.on('finish', () => {
+    const duration = (Date.now() - start) / 1000;
+    httpDuration
+      .labels(req.method, req.route?.path || req.path, res.statusCode)
+      .observe(duration);
+  });
+  
+  next();
+});
+```
+
+</CodeGroup>
+
+## Performance Testing
+
+<Tabs>
+  <Tab title="Load Testing">
+    ```javascript
+    // Using Artillery.js
+    const artillery = require('artillery');
+    
+    const config = {
+      target: 'http://localhost:3000',
+      phases: [
+        { duration: 60, arrivalRate: 10 },
+        { duration: 120, arrivalRate: 50 },
+        { duration: 60, arrivalRate: 100 }
+      ],
+      scenarios: [
+        {
+          name: 'API Load Test',
+          requests: [
+            { get: { url: '/api/users' } },
+            { post: { url: '/api/users', json: { name: 'Test User' } } }
+          ]
+        }
+      ]
+    };
+    ```
+  </Tab>
+  
+  <Tab title="Lighthouse CI">
+    ```yaml
+    # .github/workflows/lighthouse.yml
+    name: Lighthouse CI
+    on: [push]
+    jobs:
+      lighthouse:
+        runs-on: ubuntu-latest
+        steps:
+          - uses: actions/checkout@v2
+          - name: Run Lighthouse CI
+            run: |
+              npm install -g @lhci/cli@0.8.x
+              lhci autorun
+    ```
+  </Tab>
+  
+  <Tab title="Bundle Analysis">
+    ```javascript
+    // webpack-bundle-analyzer
+    const BundleAnalyzerPlugin = require('webpack-bundle-analyzer').BundleAnalyzerPlugin;
+    
+    module.exports = {
+      plugins: [
+        new BundleAnalyzerPlugin({
+          analyzerMode: 'static',
+          openAnalyzer: false,
+          reportFilename: 'bundle-report.html'
+        })
+      ]
+    };
+    ```
+  </Tab>
+</Tabs>
+
+## Optimization Checklist
+
+<Note>
+Use this checklist to ensure you've covered all performance optimization areas:
+</Note>
+
+### Frontend Checklist
+- [ ] Implement code splitting and lazy loading
+- [ ] Optimize images (WebP, responsive, lazy loading)
+- [ ] Minify and compress CSS/JS
+- [ ] Use CDN for static assets
+- [ ] Implement service workers for caching
+- [ ] Optimize web fonts loading
+- [ ] Remove unused CSS and JavaScript
+
+### Backend Checklist
+- [ ] Database query optimization
+- [ ] Implement caching (Redis, Memcached)
+- [ ] Use connection pooling
+- [ ] Enable response compression
+- [ ] Implement rate limiting
+- [ ] Optimize API responses (pagination, filtering)
+- [ ] Use HTTP/2 and keep-alive connections
+
+### Infrastructure Checklist
+- [ ] Use a Content Delivery Network (CDN)
+- [ ] Implement load balancing
+- [ ] Enable HTTP caching headers
+- [ ] Use database read replicas
+- [ ] Monitor application performance
+- [ ] Set up alerting for performance issues
+
+## Advanced Techniques
+
+<Warning>
+These techniques require careful implementation and testing:
+</Warning>
+
+<CardGroup cols={2}>
+  <Card
+    title="Server-Side Rendering"
+    icon="server"
+  >
+    Improve initial page load times with SSR frameworks like Next.js or Nuxt.js
+  </Card>
+  <Card
+    title="Edge Computing"
+    icon="globe"
+  >
+    Deploy functions closer to users with edge computing platforms
+  </Card>
+  <Card
+    title="Database Sharding"
+    icon="database"
+  >
+    Distribute data across multiple database instances for better performance
+  </Card>
+  <Card
+    title="Microservices"
+    icon="cubes"
+  >
+    Break down monolithic applications into smaller, scalable services
+  </Card>
+</CardGroup>
+
+## Tools and Resources
+
+<AccordionGroup>
+  <Accordion title="Performance Testing Tools" icon="tools">
+    - **Lighthouse**: Web performance auditing
+    - **WebPageTest**: Detailed performance analysis
+    - **GTmetrix**: Performance monitoring and optimization
+    - **Artillery**: Load testing framework
+    - **k6**: Modern load testing tool
+  </Accordion>
+  
+  <Accordion title="Monitoring Tools" icon="chart-line">
+    - **New Relic**: Application performance monitoring
+    - **DataDog**: Infrastructure and application monitoring
+    - **Sentry**: Error tracking and performance monitoring
+    - **Google Analytics**: Web analytics and Core Web Vitals
+    - **Prometheus + Grafana**: Open-source monitoring stack
+  </Accordion>
+</AccordionGroup>

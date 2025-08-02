@@ -1,0 +1,1897 @@
+---
+title: 'Microservices Architecture'
+description: 'Complete guide to designing, implementing, and managing microservices architecture'
+icon: 'cubes'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/microservices-light.png"
+  alt="Microservices Architecture"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/microservices-dark.png"
+  alt="Microservices Architecture"
+/>
+
+## Introduction
+
+Microservices architecture is a design approach that structures an application as a collection of loosely coupled, independently deployable services. This guide covers the principles, patterns, and best practices for building scalable microservices systems.
+
+<Info>
+Microservices can improve scalability and development velocity, but they also introduce complexity in areas like service communication, data consistency, and operational overhead.
+</Info>
+
+## Core Principles
+
+<CardGroup cols={2}>
+  <Card
+    title="Single Responsibility"
+    icon="bullseye"
+    color="#10b981"
+  >
+    Each service should have a single, well-defined business responsibility
+  </Card>
+  <Card
+    title="Decentralized Governance"
+    icon="users-gear"
+    color="#3b82f6"
+  >
+    Teams own their services end-to-end, including technology choices
+  </Card>
+  <Card
+    title="Failure Isolation"
+    icon="shield-check"
+    color="#f59e0b"
+  >
+    Failures in one service shouldn't cascade to other services
+  </Card>
+  <Card
+    title="Evolutionary Design"
+    icon="seedling"
+    color="#8b5cf6"
+  >
+    Services can evolve independently without affecting others
+  </Card>
+</CardGroup>
+
+## Service Design Patterns
+
+### Domain-Driven Design (DDD)
+
+<Tabs>
+  <Tab title="Bounded Contexts">
+    ```javascript
+    // User Management Service
+    class UserService {
+      constructor(userRepository, eventBus) {
+        this.userRepository = userRepository;
+        this.eventBus = eventBus;
+      }
+      
+      async createUser(userData) {
+        // Validate user data
+        const user = new User(userData);
+        await user.validate();
+        
+        // Save user
+        const savedUser = await this.userRepository.save(user);
+        
+        // Publish domain event
+        await this.eventBus.publish('user.created', {
+          userId: savedUser.id,
+          email: savedUser.email,
+          createdAt: savedUser.createdAt
+        });
+        
+        return savedUser;
+      }
+      
+      async updateUser(userId, updates) {
+        const user = await this.userRepository.findById(userId);
+        if (!user) {
+          throw new Error('User not found');
+        }
+        
+        const oldEmail = user.email;
+        user.update(updates);
+        
+        const updatedUser = await this.userRepository.save(user);
+        
+        // Publish event if email changed
+        if (oldEmail !== updatedUser.email) {
+          await this.eventBus.publish('user.email.changed', {
+            userId: updatedUser.id,
+            oldEmail,
+            newEmail: updatedUser.email
+          });
+        }
+        
+        return updatedUser;
+      }
+    }
+    
+    // Order Management Service
+    class OrderService {
+      constructor(orderRepository, userServiceClient, inventoryServiceClient, eventBus) {
+        this.orderRepository = orderRepository;
+        this.userServiceClient = userServiceClient;
+        this.inventoryServiceClient = inventoryServiceClient;
+        this.eventBus = eventBus;
+      }
+      
+      async createOrder(orderData) {
+        // Verify user exists
+        const user = await this.userServiceClient.getUser(orderData.userId);
+        if (!user) {
+          throw new Error('User not found');
+        }
+        
+        // Check inventory
+        const inventoryCheck = await this.inventoryServiceClient.checkAvailability(
+          orderData.items
+        );
+        
+        if (!inventoryCheck.available) {
+          throw new Error('Insufficient inventory');
+        }
+        
+        // Create order
+        const order = new Order(orderData);
+        const savedOrder = await this.orderRepository.save(order);
+        
+        // Reserve inventory
+        await this.inventoryServiceClient.reserveItems(
+          savedOrder.id,
+          orderData.items
+        );
+        
+        // Publish event
+        await this.eventBus.publish('order.created', {
+          orderId: savedOrder.id,
+          userId: savedOrder.userId,
+          total: savedOrder.total,
+          items: savedOrder.items
+        });
+        
+        return savedOrder;
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Aggregates & Entities">
+    ```javascript
+    // User Aggregate
+    class User {
+      constructor(data) {
+        this.id = data.id;
+        this.email = data.email;
+        this.profile = new UserProfile(data.profile);
+        this.preferences = new UserPreferences(data.preferences);
+        this.createdAt = data.createdAt || new Date();
+        this.updatedAt = data.updatedAt || new Date();
+        this.version = data.version || 0;
+      }
+      
+      validate() {
+        if (!this.email || !this.isValidEmail(this.email)) {
+          throw new Error('Invalid email address');
+        }
+        
+        this.profile.validate();
+        this.preferences.validate();
+      }
+      
+      updateProfile(profileData) {
+        this.profile.update(profileData);
+        this.updatedAt = new Date();
+        this.version++;
+      }
+      
+      updatePreferences(preferencesData) {
+        this.preferences.update(preferencesData);
+        this.updatedAt = new Date();
+        this.version++;
+      }
+      
+      isValidEmail(email) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return emailRegex.test(email);
+      }
+    }
+    
+    // Value Objects
+    class UserProfile {
+      constructor(data) {
+        this.firstName = data.firstName;
+        this.lastName = data.lastName;
+        this.dateOfBirth = data.dateOfBirth;
+        this.address = new Address(data.address);
+      }
+      
+      validate() {
+        if (!this.firstName || !this.lastName) {
+          throw new Error('First name and last name are required');
+        }
+      }
+      
+      update(data) {
+        this.firstName = data.firstName || this.firstName;
+        this.lastName = data.lastName || this.lastName;
+        this.dateOfBirth = data.dateOfBirth || this.dateOfBirth;
+        
+        if (data.address) {
+          this.address = new Address(data.address);
+        }
+      }
+      
+      getFullName() {
+        return `${this.firstName} ${this.lastName}`;
+      }
+    }
+    
+    class Address {
+      constructor(data) {
+        this.street = data.street;
+        this.city = data.city;
+        this.state = data.state;
+        this.zipCode = data.zipCode;
+        this.country = data.country;
+      }
+      
+      validate() {
+        if (!this.street || !this.city || !this.zipCode) {
+          throw new Error('Street, city, and zip code are required');
+        }
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Repository Pattern">
+    ```javascript
+    // Abstract Repository
+    class Repository {
+      async findById(id) {
+        throw new Error('Method must be implemented');
+      }
+      
+      async save(entity) {
+        throw new Error('Method must be implemented');
+      }
+      
+      async delete(id) {
+        throw new Error('Method must be implemented');
+      }
+    }
+    
+    // User Repository Implementation
+    class UserRepository extends Repository {
+      constructor(database) {
+        super();
+        this.db = database;
+      }
+      
+      async findById(id) {
+        const userData = await this.db.users.findOne({ id });
+        return userData ? new User(userData) : null;
+      }
+      
+      async findByEmail(email) {
+        const userData = await this.db.users.findOne({ email });
+        return userData ? new User(userData) : null;
+      }
+      
+      async save(user) {
+        const userData = {
+          id: user.id,
+          email: user.email,
+          profile: user.profile,
+          preferences: user.preferences,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt,
+          version: user.version
+        };
+        
+        if (user.id) {
+          // Update existing user with optimistic locking
+          const result = await this.db.users.updateOne(
+            { id: user.id, version: user.version - 1 },
+            { $set: userData }
+          );
+          
+          if (result.modifiedCount === 0) {
+            throw new Error('Concurrent modification detected');
+          }
+        } else {
+          // Create new user
+          userData.id = this.generateId();
+          await this.db.users.insertOne(userData);
+          user.id = userData.id;
+        }
+        
+        return user;
+      }
+      
+      async delete(id) {
+        const result = await this.db.users.deleteOne({ id });
+        return result.deletedCount > 0;
+      }
+      
+      async findByFilters(filters, pagination) {
+        const query = this.buildQuery(filters);
+        const users = await this.db.users
+          .find(query)
+          .skip(pagination.offset)
+          .limit(pagination.limit)
+          .toArray();
+        
+        return users.map(userData => new User(userData));
+      }
+      
+      buildQuery(filters) {
+        const query = {};
+        
+        if (filters.email) {
+          query.email = { $regex: filters.email, $options: 'i' };
+        }
+        
+        if (filters.createdAfter) {
+          query.createdAt = { $gte: new Date(filters.createdAfter) };
+        }
+        
+        if (filters.city) {
+          query['profile.address.city'] = filters.city;
+        }
+        
+        return query;
+      }
+      
+      generateId() {
+        return require('crypto').randomUUID();
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Service Communication
+
+### Synchronous Communication
+
+<AccordionGroup>
+  <Accordion title="REST API Communication" icon="globe">
+    ```javascript
+    // Service Client with Circuit Breaker
+    const CircuitBreaker = require('opossum');
+    const axios = require('axios');
+    
+    class ServiceClient {
+      constructor(baseURL, options = {}) {
+        this.baseURL = baseURL;
+        this.timeout = options.timeout || 5000;
+        this.retries = options.retries || 3;
+        
+        // Create axios instance
+        this.client = axios.create({
+          baseURL,
+          timeout: this.timeout,
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'microservice-client/1.0'
+          }
+        });
+        
+        // Setup circuit breaker
+        this.circuitBreaker = new CircuitBreaker(this.makeRequest.bind(this), {
+          timeout: this.timeout,
+          errorThresholdPercentage: 50,
+          resetTimeout: 30000,
+          rollingCountTimeout: 10000,
+          rollingCountBuckets: 10
+        });
+        
+        this.circuitBreaker.fallback(() => {
+          throw new Error('Service temporarily unavailable');
+        });
+        
+        this.setupInterceptors();
+      }
+      
+      setupInterceptors() {
+        // Request interceptor for authentication
+        this.client.interceptors.request.use(
+          (config) => {
+            const token = this.getAuthToken();
+            if (token) {
+              config.headers.Authorization = `Bearer ${token}`;
+            }
+            
+            // Add correlation ID for tracing
+            config.headers['X-Correlation-ID'] = this.generateCorrelationId();
+            
+            return config;
+          },
+          (error) => Promise.reject(error)
+        );
+        
+        // Response interceptor for error handling
+        this.client.interceptors.response.use(
+          (response) => response,
+          (error) => {
+            if (error.response?.status === 401) {
+              // Handle authentication error
+              this.handleAuthError();
+            }
+            
+            return Promise.reject(error);
+          }
+        );
+      }
+      
+      async makeRequest(config) {
+        let lastError;
+        
+        for (let attempt = 1; attempt <= this.retries; attempt++) {
+          try {
+            const response = await this.client(config);
+            return response.data;
+          } catch (error) {
+            lastError = error;
+            
+            // Don't retry on client errors (4xx)
+            if (error.response?.status >= 400 && error.response?.status < 500) {
+              throw error;
+            }
+            
+            // Exponential backoff
+            if (attempt < this.retries) {
+              const delay = Math.pow(2, attempt) * 1000;
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+        }
+        
+        throw lastError;
+      }
+      
+      async get(path, params = {}) {
+        return this.circuitBreaker.fire({
+          method: 'GET',
+          url: path,
+          params
+        });
+      }
+      
+      async post(path, data) {
+        return this.circuitBreaker.fire({
+          method: 'POST',
+          url: path,
+          data
+        });
+      }
+      
+      async put(path, data) {
+        return this.circuitBreaker.fire({
+          method: 'PUT',
+          url: path,
+          data
+        });
+      }
+      
+      async delete(path) {
+        return this.circuitBreaker.fire({
+          method: 'DELETE',
+          url: path
+        });
+      }
+      
+      getAuthToken() {
+        // Implement token retrieval logic
+        return process.env.SERVICE_TOKEN;
+      }
+      
+      generateCorrelationId() {
+        return require('crypto').randomUUID();
+      }
+      
+      handleAuthError() {
+        // Implement authentication error handling
+        console.error('Authentication failed for service call');
+      }
+    }
+    
+    // Usage
+    class UserServiceClient extends ServiceClient {
+      constructor() {
+        super(process.env.USER_SERVICE_URL);
+      }
+      
+      async getUser(userId) {
+        return this.get(`/users/${userId}`);
+      }
+      
+      async createUser(userData) {
+        return this.post('/users', userData);
+      }
+      
+      async updateUser(userId, updates) {
+        return this.put(`/users/${userId}`, updates);
+      }
+      
+      async deleteUser(userId) {
+        return this.delete(`/users/${userId}`);
+      }
+      
+      async searchUsers(filters, pagination) {
+        return this.get('/users/search', { ...filters, ...pagination });
+      }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="gRPC Communication" icon="network-wired">
+    ```protobuf
+    // user.proto
+    syntax = "proto3";
+    
+    package user;
+    
+    service UserService {
+      rpc GetUser(GetUserRequest) returns (User);
+      rpc CreateUser(CreateUserRequest) returns (User);
+      rpc UpdateUser(UpdateUserRequest) returns (User);
+      rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+      rpc SearchUsers(SearchUsersRequest) returns (SearchUsersResponse);
+    }
+    
+    message User {
+      string id = 1;
+      string email = 2;
+      UserProfile profile = 3;
+      UserPreferences preferences = 4;
+      int64 created_at = 5;
+      int64 updated_at = 6;
+      int32 version = 7;
+    }
+    
+    message UserProfile {
+      string first_name = 1;
+      string last_name = 2;
+      string date_of_birth = 3;
+      Address address = 4;
+    }
+    
+    message Address {
+      string street = 1;
+      string city = 2;
+      string state = 3;
+      string zip_code = 4;
+      string country = 5;
+    }
+    
+    message UserPreferences {
+      string language = 1;
+      string timezone = 2;
+      bool email_notifications = 3;
+      bool sms_notifications = 4;
+    }
+    
+    message GetUserRequest {
+      string id = 1;
+    }
+    
+    message CreateUserRequest {
+      string email = 1;
+      UserProfile profile = 2;
+      UserPreferences preferences = 3;
+    }
+    
+    message UpdateUserRequest {
+      string id = 1;
+      UserProfile profile = 2;
+      UserPreferences preferences = 3;
+      int32 version = 4;
+    }
+    
+    message DeleteUserRequest {
+      string id = 1;
+    }
+    
+    message DeleteUserResponse {
+      bool success = 1;
+    }
+    
+    message SearchUsersRequest {
+      string email_filter = 1;
+      string city_filter = 2;
+      int64 created_after = 3;
+      int32 page = 4;
+      int32 page_size = 5;
+    }
+    
+    message SearchUsersResponse {
+      repeated User users = 1;
+      int32 total_count = 2;
+      int32 page = 3;
+      int32 page_size = 4;
+    }
+    ```
+    
+    ```javascript
+    // gRPC Server Implementation
+    const grpc = require('@grpc/grpc-js');
+    const protoLoader = require('@grpc/proto-loader');
+    
+    class UserServiceServer {
+      constructor(userService) {
+        this.userService = userService;
+        
+        // Load proto file
+        const packageDefinition = protoLoader.loadSync('user.proto', {
+          keepCase: true,
+          longs: String,
+          enums: String,
+          defaults: true,
+          oneofs: true
+        });
+        
+        this.proto = grpc.loadPackageDefinition(packageDefinition).user;
+      }
+      
+      async getUser(call, callback) {
+        try {
+          const { id } = call.request;
+          const user = await this.userService.getUser(id);
+          
+          if (!user) {
+            return callback({
+              code: grpc.status.NOT_FOUND,
+              message: 'User not found'
+            });
+          }
+          
+          callback(null, this.mapUserToProto(user));
+        } catch (error) {
+          callback({
+            code: grpc.status.INTERNAL,
+            message: error.message
+          });
+        }
+      }
+      
+      async createUser(call, callback) {
+        try {
+          const userData = this.mapProtoToUser(call.request);
+          const user = await this.userService.createUser(userData);
+          
+          callback(null, this.mapUserToProto(user));
+        } catch (error) {
+          callback({
+            code: grpc.status.INVALID_ARGUMENT,
+            message: error.message
+          });
+        }
+      }
+      
+      async updateUser(call, callback) {
+        try {
+          const { id, profile, preferences, version } = call.request;
+          const updates = { profile, preferences };
+          
+          const user = await this.userService.updateUser(id, updates, version);
+          
+          callback(null, this.mapUserToProto(user));
+        } catch (error) {
+          const code = error.message.includes('not found') 
+            ? grpc.status.NOT_FOUND 
+            : grpc.status.INVALID_ARGUMENT;
+            
+          callback({ code, message: error.message });
+        }
+      }
+      
+      async deleteUser(call, callback) {
+        try {
+          const { id } = call.request;
+          const success = await this.userService.deleteUser(id);
+          
+          callback(null, { success });
+        } catch (error) {
+          callback({
+            code: grpc.status.INTERNAL,
+            message: error.message
+          });
+        }
+      }
+      
+      async searchUsers(call, callback) {
+        try {
+          const { email_filter, city_filter, created_after, page, page_size } = call.request;
+          
+          const filters = {
+            email: email_filter,
+            city: city_filter,
+            createdAfter: created_after ? new Date(parseInt(created_after)) : null
+          };
+          
+          const pagination = {
+            page: page || 1,
+            pageSize: page_size || 10
+          };
+          
+          const result = await this.userService.searchUsers(filters, pagination);
+          
+          callback(null, {
+            users: result.users.map(user => this.mapUserToProto(user)),
+            total_count: result.totalCount,
+            page: result.page,
+            page_size: result.pageSize
+          });
+        } catch (error) {
+          callback({
+            code: grpc.status.INTERNAL,
+            message: error.message
+          });
+        }
+      }
+      
+      mapUserToProto(user) {
+        return {
+          id: user.id,
+          email: user.email,
+          profile: {
+            first_name: user.profile.firstName,
+            last_name: user.profile.lastName,
+            date_of_birth: user.profile.dateOfBirth,
+            address: {
+              street: user.profile.address.street,
+              city: user.profile.address.city,
+              state: user.profile.address.state,
+              zip_code: user.profile.address.zipCode,
+              country: user.profile.address.country
+            }
+          },
+          preferences: {
+            language: user.preferences.language,
+            timezone: user.preferences.timezone,
+            email_notifications: user.preferences.emailNotifications,
+            sms_notifications: user.preferences.smsNotifications
+          },
+          created_at: user.createdAt.getTime().toString(),
+          updated_at: user.updatedAt.getTime().toString(),
+          version: user.version
+        };
+      }
+      
+      mapProtoToUser(proto) {
+        return {
+          email: proto.email,
+          profile: {
+            firstName: proto.profile.first_name,
+            lastName: proto.profile.last_name,
+            dateOfBirth: proto.profile.date_of_birth,
+            address: {
+              street: proto.profile.address.street,
+              city: proto.profile.address.city,
+              state: proto.profile.address.state,
+              zipCode: proto.profile.address.zip_code,
+              country: proto.profile.address.country
+            }
+          },
+          preferences: {
+            language: proto.preferences.language,
+            timezone: proto.preferences.timezone,
+            emailNotifications: proto.preferences.email_notifications,
+            smsNotifications: proto.preferences.sms_notifications
+          }
+        };
+      }
+      
+      start(port = 50051) {
+        const server = new grpc.Server();
+        
+        server.addService(this.proto.UserService.service, {
+          getUser: this.getUser.bind(this),
+          createUser: this.createUser.bind(this),
+          updateUser: this.updateUser.bind(this),
+          deleteUser: this.deleteUser.bind(this),
+          searchUsers: this.searchUsers.bind(this)
+        });
+        
+        server.bindAsync(
+          `0.0.0.0:${port}`,
+          grpc.ServerCredentials.createInsecure(),
+          (error, port) => {
+            if (error) {
+              console.error('Failed to start gRPC server:', error);
+              return;
+            }
+            
+            console.log(`gRPC server started on port ${port}`);
+            server.start();
+          }
+        );
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Asynchronous Communication
+
+<CodeGroup>
+
+```javascript Event-Driven Architecture
+const EventEmitter = require('events');
+
+// Event Bus Implementation
+class EventBus extends EventEmitter {
+  constructor(messageQueue) {
+    super();
+    this.messageQueue = messageQueue;
+    this.subscriptions = new Map();
+  }
+  
+  async publish(eventType, eventData, options = {}) {
+    const event = {
+      id: this.generateEventId(),
+      type: eventType,
+      data: eventData,
+      timestamp: new Date().toISOString(),
+      source: options.source || 'unknown',
+      version: options.version || '1.0',
+      correlationId: options.correlationId || this.generateCorrelationId()
+    };
+    
+    // Emit locally first
+    this.emit(eventType, event);
+    
+    // Publish to message queue for other services
+    await this.messageQueue.publish(eventType, event, {
+      persistent: true,
+      priority: options.priority || 0
+    });
+    
+    console.log(`Published event: ${eventType}`, { eventId: event.id });
+  }
+  
+  async subscribe(eventType, handler, options = {}) {
+    // Local subscription
+    this.on(eventType, handler);
+    
+    // Message queue subscription
+    await this.messageQueue.subscribe(eventType, async (message) => {
+      try {
+        await handler(message);
+        await message.ack();
+      } catch (error) {
+        console.error(`Error handling event ${eventType}:`, error);
+        
+        if (options.retry !== false) {
+          await message.nack(true); // Requeue
+        } else {
+          await message.ack(); // Discard
+        }
+      }
+    }, {
+      durable: options.durable !== false,
+      exclusive: options.exclusive || false
+    });
+    
+    // Track subscription
+    if (!this.subscriptions.has(eventType)) {
+      this.subscriptions.set(eventType, []);
+    }
+    this.subscriptions.get(eventType).push(handler);
+  }
+  
+  generateEventId() {
+    return require('crypto').randomUUID();
+  }
+  
+  generateCorrelationId() {
+    return require('crypto').randomUUID();
+  }
+}
+
+// Domain Events
+class DomainEvent {
+  constructor(type, aggregateId, data, version = 1) {
+    this.id = require('crypto').randomUUID();
+    this.type = type;
+    this.aggregateId = aggregateId;
+    this.data = data;
+    this.version = version;
+    this.timestamp = new Date();
+  }
+}
+
+// Event Store
+class EventStore {
+  constructor(database) {
+    this.db = database;
+  }
+  
+  async saveEvents(aggregateId, events, expectedVersion) {
+    const session = await this.db.startSession();
+    
+    try {
+      await session.withTransaction(async () => {
+        // Check current version
+        const currentVersion = await this.getCurrentVersion(aggregateId);
+        
+        if (currentVersion !== expectedVersion) {
+          throw new Error('Concurrency conflict');
+        }
+        
+        // Save events
+        const eventDocuments = events.map((event, index) => ({
+          aggregateId,
+          eventId: event.id,
+          eventType: event.type,
+          eventData: event.data,
+          eventVersion: event.version,
+          sequenceNumber: expectedVersion + index + 1,
+          timestamp: event.timestamp
+        }));
+        
+        await this.db.collection('events').insertMany(eventDocuments, { session });
+        
+        // Update aggregate version
+        await this.db.collection('aggregates').updateOne(
+          { aggregateId },
+          { 
+            $set: { 
+              version: expectedVersion + events.length,
+              lastModified: new Date()
+            }
+          },
+          { upsert: true, session }
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
+  
+  async getEvents(aggregateId, fromVersion = 0) {
+    const events = await this.db.collection('events')
+      .find({ 
+        aggregateId,
+        sequenceNumber: { $gt: fromVersion }
+      })
+      .sort({ sequenceNumber: 1 })
+      .toArray();
+    
+    return events.map(doc => new DomainEvent(
+      doc.eventType,
+      doc.aggregateId,
+      doc.eventData,
+      doc.eventVersion
+    ));
+  }
+  
+  async getCurrentVersion(aggregateId) {
+    const aggregate = await this.db.collection('aggregates')
+      .findOne({ aggregateId });
+    
+    return aggregate ? aggregate.version : 0;
+  }
+}
+
+// Saga Pattern for Distributed Transactions
+class OrderSaga {
+  constructor(eventBus, userService, inventoryService, paymentService) {
+    this.eventBus = eventBus;
+    this.userService = userService;
+    this.inventoryService = inventoryService;
+    this.paymentService = paymentService;
+    
+    this.setupEventHandlers();
+  }
+  
+  setupEventHandlers() {
+    this.eventBus.subscribe('order.created', this.handleOrderCreated.bind(this));
+    this.eventBus.subscribe('inventory.reserved', this.handleInventoryReserved.bind(this));
+    this.eventBus.subscribe('inventory.reservation.failed', this.handleInventoryReservationFailed.bind(this));
+    this.eventBus.subscribe('payment.processed', this.handlePaymentProcessed.bind(this));
+    this.eventBus.subscribe('payment.failed', this.handlePaymentFailed.bind(this));
+  }
+  
+  async handleOrderCreated(event) {
+    const { orderId, userId, items } = event.data;
+    
+    try {
+      // Step 1: Reserve inventory
+      await this.inventoryService.reserveItems(orderId, items);
+    } catch (error) {
+      await this.eventBus.publish('order.failed', {
+        orderId,
+        reason: 'Inventory reservation failed',
+        error: error.message
+      });
+    }
+  }
+  
+  async handleInventoryReserved(event) {
+    const { orderId, items } = event.data;
+    
+    try {
+      // Step 2: Process payment
+      const order = await this.getOrder(orderId);
+      await this.paymentService.processPayment(orderId, order.total, order.userId);
+    } catch (error) {
+      // Compensate: Release inventory
+      await this.inventoryService.releaseReservation(orderId);
+      
+      await this.eventBus.publish('order.failed', {
+        orderId,
+        reason: 'Payment processing failed',
+        error: error.message
+      });
+    }
+  }
+  
+  async handleInventoryReservationFailed(event) {
+    const { orderId, reason } = event.data;
+    
+    await this.eventBus.publish('order.failed', {
+      orderId,
+      reason: `Inventory reservation failed: ${reason}`
+    });
+  }
+  
+  async handlePaymentProcessed(event) {
+    const { orderId, paymentId } = event.data;
+    
+    // Step 3: Confirm order
+    await this.eventBus.publish('order.confirmed', {
+      orderId,
+      paymentId,
+      confirmedAt: new Date().toISOString()
+    });
+  }
+  
+  async handlePaymentFailed(event) {
+    const { orderId, reason } = event.data;
+    
+    // Compensate: Release inventory
+    await this.inventoryService.releaseReservation(orderId);
+    
+    await this.eventBus.publish('order.failed', {
+      orderId,
+      reason: `Payment failed: ${reason}`
+    });
+  }
+  
+  async getOrder(orderId) {
+    // Implementation to fetch order details
+    return await this.orderService.getOrder(orderId);
+  }
+}
+```
+
+```javascript Message Queue Integration
+const amqp = require('amqplib');
+
+class RabbitMQAdapter {
+  constructor(connectionString) {
+    this.connectionString = connectionString;
+    this.connection = null;
+    this.channel = null;
+    this.exchanges = new Map();
+    this.queues = new Map();
+  }
+  
+  async connect() {
+    try {
+      this.connection = await amqp.connect(this.connectionString);
+      this.channel = await this.connection.createChannel();
+      
+      // Handle connection errors
+      this.connection.on('error', (error) => {
+        console.error('RabbitMQ connection error:', error);
+      });
+      
+      this.connection.on('close', () => {
+        console.log('RabbitMQ connection closed');
+        this.reconnect();
+      });
+      
+      console.log('Connected to RabbitMQ');
+    } catch (error) {
+      console.error('Failed to connect to RabbitMQ:', error);
+      throw error;
+    }
+  }
+  
+  async reconnect() {
+    setTimeout(async () => {
+      try {
+        await this.connect();
+      } catch (error) {
+        console.error('Reconnection failed:', error);
+        this.reconnect();
+      }
+    }, 5000);
+  }
+  
+  async declareExchange(name, type = 'topic', options = {}) {
+    await this.channel.assertExchange(name, type, {
+      durable: true,
+      ...options
+    });
+    
+    this.exchanges.set(name, { type, options });
+  }
+  
+  async declareQueue(name, options = {}) {
+    const queue = await this.channel.assertQueue(name, {
+      durable: true,
+      ...options
+    });
+    
+    this.queues.set(name, queue);
+    return queue;
+  }
+  
+  async publish(exchange, routingKey, message, options = {}) {
+    const messageBuffer = Buffer.from(JSON.stringify(message));
+    
+    return this.channel.publish(exchange, routingKey, messageBuffer, {
+      persistent: true,
+      timestamp: Date.now(),
+      messageId: require('crypto').randomUUID(),
+      ...options
+    });
+  }
+  
+  async subscribe(queue, handler, options = {}) {
+    await this.channel.consume(queue, async (message) => {
+      if (!message) return;
+      
+      try {
+        const content = JSON.parse(message.content.toString());
+        
+        const messageWrapper = {
+          content,
+          properties: message.properties,
+          fields: message.fields,
+          ack: () => this.channel.ack(message),
+          nack: (requeue = false) => this.channel.nack(message, false, requeue),
+          reject: (requeue = false) => this.channel.reject(message, requeue)
+        };
+        
+        await handler(messageWrapper);
+      } catch (error) {
+        console.error('Error processing message:', error);
+        
+        if (options.autoAck !== false) {
+          this.channel.nack(message, false, false); // Reject and don't requeue
+        }
+      }
+    }, {
+      noAck: options.autoAck === true,
+      ...options
+    });
+  }
+  
+  async bindQueue(queue, exchange, routingKey) {
+    await this.channel.bindQueue(queue, exchange, routingKey);
+  }
+  
+  async close() {
+    if (this.channel) {
+      await this.channel.close();
+    }
+    
+    if (this.connection) {
+      await this.connection.close();
+    }
+  }
+}
+
+// Event Bus with RabbitMQ
+class DistributedEventBus extends EventBus {
+  constructor(rabbitMQAdapter) {
+    super();
+    this.mq = rabbitMQAdapter;
+    this.serviceName = process.env.SERVICE_NAME || 'unknown';
+  }
+  
+  async initialize() {
+    await this.mq.connect();
+    
+    // Declare main events exchange
+    await this.mq.declareExchange('events', 'topic');
+    
+    // Declare service-specific queue
+    const queueName = `${this.serviceName}.events`;
+    await this.mq.declareQueue(queueName);
+    
+    // Bind queue to exchange for service-specific events
+    await this.mq.bindQueue(queueName, 'events', `${this.serviceName}.*`);
+    
+    // Subscribe to service events
+    await this.mq.subscribe(queueName, this.handleDistributedEvent.bind(this));
+  }
+  
+  async publish(eventType, eventData, options = {}) {
+    const event = {
+      id: this.generateEventId(),
+      type: eventType,
+      data: eventData,
+      timestamp: new Date().toISOString(),
+      source: this.serviceName,
+      version: options.version || '1.0',
+      correlationId: options.correlationId || this.generateCorrelationId()
+    };
+    
+    // Publish to RabbitMQ
+    const routingKey = `${this.serviceName}.${eventType}`;
+    await this.mq.publish('events', routingKey, event, {
+      priority: options.priority || 0
+    });
+    
+    // Emit locally
+    this.emit(eventType, event);
+    
+    console.log(`Published distributed event: ${eventType}`, { eventId: event.id });
+  }
+  
+  async subscribe(eventType, handler, options = {}) {
+    // Local subscription
+    this.on(eventType, handler);
+    
+    // For cross-service events, bind to specific routing keys
+    if (options.services) {
+      for (const service of options.services) {
+        const routingKey = `${service}.${eventType}`;
+        const queueName = `${this.serviceName}.${service}.${eventType}`;
+        
+        await this.mq.declareQueue(queueName);
+        await this.mq.bindQueue(queueName, 'events', routingKey);
+        
+        await this.mq.subscribe(queueName, async (message) => {
+          try {
+            await handler(message.content);
+            await message.ack();
+          } catch (error) {
+            console.error(`Error handling distributed event ${eventType}:`, error);
+            await message.nack(options.retry !== false);
+          }
+        });
+      }
+    }
+  }
+  
+  async handleDistributedEvent(message) {
+    const event = message.content;
+    this.emit(event.type, event);
+    await message.ack();
+  }
+}
+```
+
+</CodeGroup>
+
+## Data Management
+
+### Database per Service
+
+<Tabs>
+  <Tab title="Service Data Isolation">
+    ```javascript
+    // User Service Database Configuration
+    class UserServiceDatabase {
+      constructor() {
+        this.connectionString = process.env.USER_DB_CONNECTION;
+        this.dbName = 'user_service';
+      }
+      
+      async connect() {
+        this.client = new MongoClient(this.connectionString);
+        await this.client.connect();
+        this.db = this.client.db(this.dbName);
+        
+        // Create collections and indexes
+        await this.setupCollections();
+      }
+      
+      async setupCollections() {
+        // Users collection
+        const users = this.db.collection('users');
+        await users.createIndex({ email: 1 }, { unique: true });
+        await users.createIndex({ 'profile.address.city': 1 });
+        await users.createIndex({ createdAt: 1 });
+        
+        // User sessions collection
+        const sessions = this.db.collection('user_sessions');
+        await sessions.createIndex({ userId: 1 });
+        await sessions.createIndex({ token: 1 }, { unique: true });
+        await sessions.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+        
+        // User preferences collection
+        const preferences = this.db.collection('user_preferences');
+        await preferences.createIndex({ userId: 1 }, { unique: true });
+      }
+    }
+    
+    // Order Service Database Configuration
+    class OrderServiceDatabase {
+      constructor() {
+        this.connectionString = process.env.ORDER_DB_CONNECTION;
+        this.dbName = 'order_service';
+      }
+      
+      async connect() {
+        this.client = new MongoClient(this.connectionString);
+        await this.client.connect();
+        this.db = this.client.db(this.dbName);
+        
+        await this.setupCollections();
+      }
+      
+      async setupCollections() {
+        // Orders collection
+        const orders = this.db.collection('orders');
+        await orders.createIndex({ userId: 1 });
+        await orders.createIndex({ status: 1 });
+        await orders.createIndex({ createdAt: 1 });
+        await orders.createIndex({ 'items.productId': 1 });
+        
+        // Order events collection (for event sourcing)
+        const orderEvents = this.db.collection('order_events');
+        await orderEvents.createIndex({ orderId: 1, sequenceNumber: 1 }, { unique: true });
+        await orderEvents.createIndex({ eventType: 1 });
+        await orderEvents.createIndex({ timestamp: 1 });
+        
+        // Order snapshots collection
+        const orderSnapshots = this.db.collection('order_snapshots');
+        await orderSnapshots.createIndex({ orderId: 1 }, { unique: true });
+        await orderSnapshots.createIndex({ version: 1 });
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Data Synchronization">
+    ```javascript
+    // Data Synchronization Service
+    class DataSynchronizationService {
+      constructor(eventBus, databases) {
+        this.eventBus = eventBus;
+        this.databases = databases;
+        this.syncHandlers = new Map();
+        
+        this.setupSyncHandlers();
+      }
+      
+      setupSyncHandlers() {
+        // User data synchronization
+        this.eventBus.subscribe('user.created', this.syncUserCreated.bind(this));
+        this.eventBus.subscribe('user.updated', this.syncUserUpdated.bind(this));
+        this.eventBus.subscribe('user.deleted', this.syncUserDeleted.bind(this));
+        
+        // Product data synchronization
+        this.eventBus.subscribe('product.created', this.syncProductCreated.bind(this));
+        this.eventBus.subscribe('product.updated', this.syncProductUpdated.bind(this));
+        this.eventBus.subscribe('product.deleted', this.syncProductDeleted.bind(this));
+      }
+      
+      async syncUserCreated(event) {
+        const { userId, email, profile } = event.data;
+        
+        // Sync to Order Service (user denormalization)
+        await this.databases.orderService.collection('user_cache').updateOne(
+          { userId },
+          {
+            $set: {
+              userId,
+              email,
+              name: `${profile.firstName} ${profile.lastName}`,
+              lastUpdated: new Date()
+            }
+          },
+          { upsert: true }
+        );
+        
+        // Sync to Analytics Service
+        await this.databases.analyticsService.collection('user_profiles').updateOne(
+          { userId },
+          {
+            $set: {
+              userId,
+              email,
+              city: profile.address.city,
+              state: profile.address.state,
+              country: profile.address.country,
+              createdAt: new Date(event.timestamp),
+              lastUpdated: new Date()
+            }
+          },
+          { upsert: true }
+        );
+      }
+      
+      async syncUserUpdated(event) {
+        const { userId, changes } = event.data;
+        
+        const updateData = {
+          lastUpdated: new Date()
+        };
+        
+        if (changes.profile) {
+          updateData.name = `${changes.profile.firstName} ${changes.profile.lastName}`;
+          
+          if (changes.profile.address) {
+            updateData.city = changes.profile.address.city;
+            updateData.state = changes.profile.address.state;
+            updateData.country = changes.profile.address.country;
+          }
+        }
+        
+        // Update in relevant services
+        await Promise.all([
+          this.databases.orderService.collection('user_cache').updateOne(
+            { userId },
+            { $set: updateData }
+          ),
+          this.databases.analyticsService.collection('user_profiles').updateOne(
+            { userId },
+            { $set: updateData }
+          )
+        ]);
+      }
+      
+      async syncUserDeleted(event) {
+        const { userId } = event.data;
+        
+        // Mark as deleted in dependent services (soft delete)
+        await Promise.all([
+          this.databases.orderService.collection('user_cache').updateOne(
+            { userId },
+            {
+              $set: {
+                deleted: true,
+                deletedAt: new Date(),
+                lastUpdated: new Date()
+              }
+            }
+          ),
+          this.databases.analyticsService.collection('user_profiles').updateOne(
+            { userId },
+            {
+              $set: {
+                deleted: true,
+                deletedAt: new Date(),
+                lastUpdated: new Date()
+              }
+            }
+          )
+        ]);
+      }
+      
+      async syncProductCreated(event) {
+        const { productId, name, category, price } = event.data;
+        
+        // Sync to Order Service (product denormalization)
+        await this.databases.orderService.collection('product_cache').updateOne(
+          { productId },
+          {
+            $set: {
+              productId,
+              name,
+              category,
+              price,
+              lastUpdated: new Date()
+            }
+          },
+          { upsert: true }
+        );
+      }
+      
+      // Conflict resolution for concurrent updates
+      async resolveConflict(entityType, entityId, conflicts) {
+        console.log(`Resolving conflict for ${entityType}:${entityId}`, conflicts);
+        
+        // Last-write-wins strategy (can be customized)
+        const latestUpdate = conflicts.reduce((latest, current) => {
+          return new Date(current.timestamp) > new Date(latest.timestamp) ? current : latest;
+        });
+        
+        // Apply the latest update
+        await this.applySyncUpdate(entityType, entityId, latestUpdate);
+        
+        // Log conflict resolution
+        await this.logConflictResolution(entityType, entityId, conflicts, latestUpdate);
+      }
+      
+      async applySyncUpdate(entityType, entityId, update) {
+        switch (entityType) {
+          case 'user':
+            await this.syncUserUpdated({ data: { userId: entityId, changes: update.data } });
+            break;
+          case 'product':
+            await this.syncProductUpdated({ data: { productId: entityId, changes: update.data } });
+            break;
+        }
+      }
+      
+      async logConflictResolution(entityType, entityId, conflicts, resolution) {
+        await this.databases.syncService.collection('conflict_resolutions').insertOne({
+          entityType,
+          entityId,
+          conflicts,
+          resolution,
+          resolvedAt: new Date(),
+          strategy: 'last-write-wins'
+        });
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="CQRS Implementation">
+    ```javascript
+    // Command Query Responsibility Segregation
+    class UserCommandService {
+      constructor(userRepository, eventStore, eventBus) {
+        this.userRepository = userRepository;
+        this.eventStore = eventStore;
+        this.eventBus = eventBus;
+      }
+      
+      async createUser(command) {
+        // Validate command
+        this.validateCreateUserCommand(command);
+        
+        // Check if user already exists
+        const existingUser = await this.userRepository.findByEmail(command.email);
+        if (existingUser) {
+          throw new Error('User with this email already exists');
+        }
+        
+        // Create user aggregate
+        const user = new User({
+          id: this.generateUserId(),
+          email: command.email,
+          profile: command.profile,
+          preferences: command.preferences
+        });
+        
+        // Generate domain events
+        const events = [
+          new DomainEvent('user.created', user.id, {
+            userId: user.id,
+            email: user.email,
+            profile: user.profile,
+            preferences: user.preferences,
+            createdAt: user.createdAt
+          })
+        ];
+        
+        // Save events to event store
+        await this.eventStore.saveEvents(user.id, events, 0);
+        
+        // Save user to repository
+        await this.userRepository.save(user);
+        
+        // Publish events
+        for (const event of events) {
+          await this.eventBus.publish(event.type, event.data, {
+            correlationId: command.correlationId,
+            source: 'user-service'
+          });
+        }
+        
+        return user;
+      }
+      
+      async updateUser(command) {
+        // Load user aggregate
+        const user = await this.userRepository.findById(command.userId);
+        if (!user) {
+          throw new Error('User not found');
+        }
+        
+        // Apply updates
+        const originalProfile = { ...user.profile };
+        const originalPreferences = { ...user.preferences };
+        
+        if (command.profile) {
+          user.updateProfile(command.profile);
+        }
+        
+        if (command.preferences) {
+          user.updatePreferences(command.preferences);
+        }
+        
+        // Generate events for changes
+        const events = [];
+        
+        if (command.profile && !this.deepEqual(originalProfile, user.profile)) {
+          events.push(new DomainEvent('user.profile.updated', user.id, {
+            userId: user.id,
+            oldProfile: originalProfile,
+            newProfile: user.profile,
+            updatedAt: user.updatedAt
+          }));
+        }
+        
+        if (command.preferences && !this.deepEqual(originalPreferences, user.preferences)) {
+          events.push(new DomainEvent('user.preferences.updated', user.id, {
+            userId: user.id,
+            oldPreferences: originalPreferences,
+            newPreferences: user.preferences,
+            updatedAt: user.updatedAt
+          }));
+        }
+        
+        if (events.length > 0) {
+          // Save events
+          await this.eventStore.saveEvents(user.id, events, user.version - events.length);
+          
+          // Save user
+          await this.userRepository.save(user);
+          
+          // Publish events
+          for (const event of events) {
+            await this.eventBus.publish(event.type, event.data, {
+              correlationId: command.correlationId,
+              source: 'user-service'
+            });
+          }
+        }
+        
+        return user;
+      }
+      
+      validateCreateUserCommand(command) {
+        if (!command.email || !this.isValidEmail(command.email)) {
+          throw new Error('Valid email is required');
+        }
+        
+        if (!command.profile || !command.profile.firstName || !command.profile.lastName) {
+          throw new Error('First name and last name are required');
+        }
+      }
+      
+      isValidEmail(email) {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return emailRegex.test(email);
+      }
+      
+      deepEqual(obj1, obj2) {
+        return JSON.stringify(obj1) === JSON.stringify(obj2);
+      }
+      
+      generateUserId() {
+        return require('crypto').randomUUID();
+      }
+    }
+    
+    // Query Service (Read Model)
+    class UserQueryService {
+      constructor(readDatabase, eventBus) {
+        this.readDb = readDatabase;
+        this.eventBus = eventBus;
+        
+        this.setupEventHandlers();
+      }
+      
+      setupEventHandlers() {
+        // Update read models when events occur
+        this.eventBus.subscribe('user.created', this.handleUserCreated.bind(this));
+        this.eventBus.subscribe('user.profile.updated', this.handleUserProfileUpdated.bind(this));
+        this.eventBus.subscribe('user.preferences.updated', this.handleUserPreferencesUpdated.bind(this));
+      }
+      
+      async handleUserCreated(event) {
+        const { userId, email, profile, preferences, createdAt } = event.data;
+        
+        // Update user summary view
+        await this.readDb.collection('user_summaries').insertOne({
+          userId,
+          email,
+          fullName: `${profile.firstName} ${profile.lastName}`,
+          city: profile.address.city,
+          state: profile.address.state,
+          country: profile.address.country,
+          language: preferences.language,
+          timezone: preferences.timezone,
+          createdAt: new Date(createdAt),
+          updatedAt: new Date(createdAt)
+        });
+        
+        // Update user search index
+        await this.readDb.collection('user_search').insertOne({
+          userId,
+          email,
+          firstName: profile.firstName,
+          lastName: profile.lastName,
+          fullName: `${profile.firstName} ${profile.lastName}`,
+          city: profile.address.city,
+          searchTerms: [
+            email.toLowerCase(),
+            profile.firstName.toLowerCase(),
+            profile.lastName.toLowerCase(),
+            profile.address.city.toLowerCase()
+          ],
+          createdAt: new Date(createdAt)
+        });
+      }
+      
+      async handleUserProfileUpdated(event) {
+        const { userId, newProfile, updatedAt } = event.data;
+        
+        const updateData = {
+          fullName: `${newProfile.firstName} ${newProfile.lastName}`,
+          city: newProfile.address.city,
+          state: newProfile.address.state,
+          country: newProfile.address.country,
+          updatedAt: new Date(updatedAt)
+        };
+        
+        // Update user summary
+        await this.readDb.collection('user_summaries').updateOne(
+          { userId },
+          { $set: updateData }
+        );
+        
+        // Update search index
+        await this.readDb.collection('user_search').updateOne(
+          { userId },
+          {
+            $set: {
+              firstName: newProfile.firstName,
+              lastName: newProfile.lastName,
+              fullName: updateData.fullName,
+              city: newProfile.address.city,
+              searchTerms: [
+                newProfile.firstName.toLowerCase(),
+                newProfile.lastName.toLowerCase(),
+                newProfile.address.city.toLowerCase()
+              ]
+            }
+          }
+        );
+      }
+      
+      // Query methods
+      async getUserSummary(userId) {
+        return await this.readDb.collection('user_summaries').findOne({ userId });
+      }
+      
+      async searchUsers(query, filters = {}, pagination = {}) {
+        const searchQuery = {
+          $text: { $search: query }
+        };
+        
+        // Apply filters
+        if (filters.city) {
+          searchQuery.city = filters.city;
+        }
+        
+        if (filters.state) {
+          searchQuery.state = filters.state;
+        }
+        
+        if (filters.country) {
+          searchQuery.country = filters.country;
+        }
+        
+        const skip = (pagination.page - 1) * pagination.pageSize;
+        const limit = pagination.pageSize;
+        
+        const [users, totalCount] = await Promise.all([
+          this.readDb.collection('user_search')
+            .find(searchQuery)
+            .skip(skip)
+            .limit(limit)
+            .toArray(),
+          this.readDb.collection('user_search').countDocuments(searchQuery)
+        ]);
+        
+        return {
+          users,
+          totalCount,
+          page: pagination.page,
+          pageSize: pagination.pageSize,
+          totalPages: Math.ceil(totalCount / pagination.pageSize)
+        };
+      }
+      
+      async getUsersByCity(city, pagination = {}) {
+        const skip = (pagination.page - 1) * pagination.pageSize;
+        const limit = pagination.pageSize;
+        
+        return await this.readDb.collection('user_summaries')
+          .find({ city })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Deployment & Operations
+
+<Warning>
+Microservices require sophisticated deployment and monitoring strategies to manage complexity effectively.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card
+    title="Container Orchestration"
+    icon="docker"
+    href="#container-deployment"
+  >
+    Deploy services using Docker and Kubernetes
+  </Card>
+  <Card
+    title="Service Discovery"
+    icon="compass"
+    href="#service-discovery"
+  >
+    Automatic service registration and discovery
+  </Card>
+  <Card
+    title="Load Balancing"
+    icon="scale-balanced"
+    href="#load-balancing"
+  >
+    Distribute traffic across service instances
+  </Card>
+  <Card
+    title="Monitoring & Observability"
+    icon="chart-line"
+    href="#monitoring"
+  >
+    Comprehensive monitoring and distributed tracing
+  </Card>
+</CardGroup>
+
+## Best Practices Summary
+
+<Note>
+Follow these best practices for successful microservices implementation:
+</Note>
+
+### Design Principles
+- [ ] Design services around business capabilities
+- [ ] Ensure services are loosely coupled and highly cohesive
+- [ ] Implement proper service boundaries using DDD
+- [ ] Design for failure and implement circuit breakers
+- [ ] Use asynchronous communication where possible
+
+### Data Management
+- [ ] Implement database per service pattern
+- [ ] Use event sourcing for audit trails and temporal queries
+- [ ] Implement CQRS for read/write separation
+- [ ] Handle eventual consistency appropriately
+- [ ] Implement proper data synchronization strategies
+
+### Communication
+- [ ] Use lightweight protocols (HTTP/REST, gRPC)
+- [ ] Implement proper error handling and retries
+- [ ] Use message queues for asynchronous communication
+- [ ] Implement correlation IDs for request tracing
+- [ ] Design APIs with versioning in mind
+
+### Operations
+- [ ] Implement comprehensive monitoring and logging
+- [ ] Use distributed tracing for request flows
+- [ ] Implement health checks for all services
+- [ ] Use container orchestration for deployment
+- [ ] Implement proper security measures
+- [ ] Plan for disaster recovery and backup strategies
+
+<Tip>
+Start with a monolith and extract services gradually as you understand your domain better. Microservices add complexity that should be justified by clear benefits.
+</Tip>

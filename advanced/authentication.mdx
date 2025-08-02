@@ -1,0 +1,261 @@
+---
+title: 'Authentication & Security'
+description: 'Comprehensive guide to implementing secure authentication systems'
+icon: 'shield-check'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/auth-light.png"
+  alt="Authentication Overview"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/auth-dark.png"
+  alt="Authentication Overview"
+/>
+
+## Overview
+
+Authentication is the cornerstone of any secure application. This guide covers modern authentication patterns, security best practices, and implementation strategies.
+
+<Warning>
+Always use HTTPS in production environments to protect sensitive authentication data.
+</Warning>
+
+## Authentication Methods
+
+<CardGroup cols={2}>
+  <Card
+    title="JWT Tokens"
+    icon="key"
+    href="#jwt-implementation"
+  >
+    Stateless authentication using JSON Web Tokens
+  </Card>
+  <Card
+    title="OAuth 2.0"
+    icon="users"
+    href="#oauth-setup"
+  >
+    Third-party authentication with social providers
+  </Card>
+  <Card
+    title="Session-Based"
+    icon="clock"
+    href="#session-auth"
+  >
+    Traditional server-side session management
+  </Card>
+  <Card
+    title="Multi-Factor Auth"
+    icon="mobile"
+    href="#mfa-setup"
+  >
+    Enhanced security with 2FA/MFA implementation
+  </Card>
+</CardGroup>
+
+## JWT Implementation
+
+JSON Web Tokens provide a secure way to transmit information between parties. Here's how to implement JWT authentication:
+
+<CodeGroup>
+
+```javascript Node.js
+const jwt = require('jsonwebtoken');
+
+// Generate JWT token
+function generateToken(user) {
+  return jwt.sign(
+    { 
+      userId: user.id, 
+      email: user.email 
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+}
+
+// Verify JWT token
+function verifyToken(token) {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET);
+  } catch (error) {
+    throw new Error('Invalid token');
+  }
+}
+```
+
+```python Python
+import jwt
+from datetime import datetime, timedelta
+
+def generate_token(user_data):
+    payload = {
+        'user_id': user_data['id'],
+        'email': user_data['email'],
+        'exp': datetime.utcnow() + timedelta(hours=24)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+
+def verify_token(token):
+    try:
+        return jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+    except jwt.ExpiredSignatureError:
+        raise Exception('Token has expired')
+```
+
+</CodeGroup>
+
+<Tip>
+Store JWT secrets in environment variables and rotate them regularly for enhanced security.
+</Tip>
+
+## OAuth Setup
+
+OAuth 2.0 allows users to authenticate using their existing accounts from providers like Google, GitHub, or Facebook.
+
+<Steps>
+  <Step title="Register Your Application">
+    Create an application in your chosen OAuth provider's developer console
+  </Step>
+  <Step title="Configure Redirect URIs">
+    Set up the callback URLs where users will be redirected after authentication
+  </Step>
+  <Step title="Implement Authorization Flow">
+    Handle the OAuth flow in your application
+  </Step>
+  <Step title="Store Access Tokens">
+    Securely store and manage access tokens for API calls
+  </Step>
+</Steps>
+
+## Security Best Practices
+
+<AccordionGroup>
+  <Accordion title="Password Security" icon="lock">
+    - Use strong hashing algorithms (bcrypt, Argon2)
+    - Implement password complexity requirements
+    - Enable password reset functionality
+    - Consider password-less authentication options
+  </Accordion>
+  
+  <Accordion title="Token Management" icon="key">
+    - Implement token rotation
+    - Use short-lived access tokens
+    - Store refresh tokens securely
+    - Implement token blacklisting
+  </Accordion>
+  
+  <Accordion title="Rate Limiting" icon="gauge">
+    - Implement login attempt limits
+    - Use progressive delays for failed attempts
+    - Monitor for suspicious activity
+    - Implement CAPTCHA for repeated failures
+  </Accordion>
+  
+  <Accordion title="Session Security" icon="shield">
+    - Use secure session cookies
+    - Implement session timeout
+    - Regenerate session IDs after login
+    - Clear sessions on logout
+  </Accordion>
+</AccordionGroup>
+
+## Multi-Factor Authentication
+
+Enhance security by requiring additional verification factors:
+
+<Tabs>
+  <Tab title="SMS-Based">
+    ```javascript
+    // Send SMS verification code
+    async function sendSMSCode(phoneNumber) {
+      const code = generateRandomCode();
+      await smsService.send(phoneNumber, `Your verification code: ${code}`);
+      return code;
+    }
+    ```
+  </Tab>
+  
+  <Tab title="TOTP (Authenticator Apps)">
+    ```javascript
+    const speakeasy = require('speakeasy');
+    
+    // Generate secret for user
+    const secret = speakeasy.generateSecret({
+      name: 'Your App',
+      account: user.email
+    });
+    
+    // Verify TOTP token
+    const verified = speakeasy.totp.verify({
+      secret: user.totpSecret,
+      encoding: 'base32',
+      token: userToken
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Email Verification">
+    ```javascript
+    // Send email verification
+    async function sendEmailVerification(email) {
+      const token = generateVerificationToken();
+      await emailService.send(email, {
+        subject: 'Verify your login',
+        template: 'verification',
+        data: { token }
+      });
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Testing Authentication
+
+<Note>
+Always test your authentication system thoroughly before deploying to production.
+</Note>
+
+```bash
+# Test JWT token generation
+curl -X POST http://localhost:3000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "password123"}'
+
+# Test protected endpoint
+curl -X GET http://localhost:3000/api/protected \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"
+```
+
+## Common Pitfalls
+
+<Warning>
+Avoid these common authentication mistakes:
+- Storing passwords in plain text
+- Using weak JWT secrets
+- Not implementing proper session management
+- Ignoring rate limiting
+- Insufficient input validation
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="API Security"
+    icon="api"
+    href="/advanced/api-security"
+  >
+    Learn about securing your API endpoints
+  </Card>
+  <Card
+    title="Database Security"
+    icon="database"
+    href="/advanced/database-security"
+  >
+    Implement secure database practices
+  </Card>
+</CardGroup>
